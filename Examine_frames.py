@@ -138,4 +138,4 @@ def compress_videos(cwd = None):
 
 if __name__ == "__main__":
     cwd = sys.argv[1]
-    crop_videos_debug(cwd)
+    crop_videos(cwd)
