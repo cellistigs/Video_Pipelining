@@ -10,7 +10,7 @@ import os
 from moviepy.editor import VideoFileClip
 import sys
 import subprocess
-import re 
+import re
 def inspect_videos(cwd = None):
 
     if cwd is None:
@@ -48,7 +48,7 @@ def crop_videos(cwd = None):
             ## Load in cropped version of
             print('loading ' +video)
             clip = VideoFileClip(cwd+'/'+sub+'/'+video)
-            try:     
+            try:
                 with open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py','r+') as f:
                     coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
                     intcoords = []
@@ -64,6 +64,39 @@ def crop_videos(cwd = None):
 
                  print(e.errno)
                  print('configuration not loaded')
+
+
+def crop_videos_debug(cwd = None):
+
+    if cwd is None:
+        # First get current directory
+        cwd = os.getcwd()
+    # First get all subdirectories:
+    print(cwd)
+    all_sub = next(os.walk(cwd))[1]
+    print(all_sub)
+    for sub in all_sub:
+        files = os.listdir(cwd+'/'+sub)
+        # Only look at videos
+        videos = [video for video in files if video.split('.')[-1] == 'avi']
+        for video in videos[2:]:
+            ## Load in cropped version of
+            print('loading ' +video)
+            clip = VideoFileClip(cwd+'/'+sub+'/'+video)
+
+            with open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py','r+') as f:
+                coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
+                intcoords = []
+                for coord in range(len(coords)):
+                    coords[coord] = f.readline()
+                    nums = re.findall('\d+',coords[coord])[1]
+                    intcoords.append(nums)
+
+            print(video.split('.')[0]+'cropped.avi')
+            cropped = clip.crop(x1 = intcoords[0],y1 = intcoords[1],x2 = intcoords[2],y2 = intcoords[3])
+            cropped.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped.avi',codec = 'libx264')
+
+
 def compress_videos(cwd = None):
 
     if cwd is None:
@@ -90,4 +123,4 @@ def compress_videos(cwd = None):
 
 if __name__ == "__main__":
     cwd = sys.argv[1]
-    crop_videos(cwd)
+    crop_videos_debug(cwd)
