@@ -79,7 +79,8 @@ def crop_videos_debug(cwd = None):
         files = os.listdir(cwd+'/'+sub)
         # Only look at videos
         videos = [video for video in files if video.split('.')[-1] == 'avi']
-        for video in videos[2:]:
+        print(videos)
+        for video in videos:
             ## Load in cropped version of
             print('loading ' +video)
             clip = VideoFileClip(cwd+'/'+sub+'/'+video)
@@ -94,7 +95,9 @@ def crop_videos_debug(cwd = None):
 
             print(video.split('.')[0]+'cropped.avi')
             cropped = clip.crop(x1 = intcoords[0],y1 = intcoords[1],x2 = intcoords[2],y2 = intcoords[3])
-            cropped.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped.avi',codec = 'libx264')
+            cropped_cutout = cropped.subclip(t_start = 0,t_end = 100)
+            #print(cropped_cutout.duration,cropped_cutout.fps)
+            cropped_cutout.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped.avi',codec = 'libx264',preset = 'fast',threads = 2)
 
 
 def compress_videos(cwd = None):
