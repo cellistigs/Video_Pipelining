@@ -59,7 +59,19 @@ def crop_videos(cwd = None):
 
                 print(video.split('.')[0]+'cropped.avi')
                 cropped = clip.crop(x1 = intcoords[0],y1 = intcoords[1],x2 = intcoords[2],y2 = intcoords[3])
-                cropped.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped.avi',codec = 'libx264')
+                ## We want to split our video into one hour segments.
+                ## First get the duration in seconds:
+                seconds = cropped.duration
+                segments = np.ceil(seconds/360).astype(int) # rounds up to give the number of distinct segments we need
+                for segment in range(segments):
+                    # Ensures that the last clip is the right length
+                    if segment == segments-1:
+                        endseg = -1
+                    else:
+                        endseg = 360*(segment+1)
+                    cropped_cutout = cropped.subclip(t_start = segment*360,t_end = endseg)
+                    cropped_cutout.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment) '.mp4',codec = 'libx264',preset = 'fast',threads = 2)
+
             except OSError as e:
 
                  print(e.errno)
