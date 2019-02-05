@@ -8,6 +8,7 @@
 # Save one frame of each video.
 import os
 from moviepy.editor import VideoFileClip
+import numpy as np
 import sys
 import subprocess
 import re
@@ -44,7 +45,8 @@ def crop_videos(cwd = None):
         files = os.listdir(cwd+'/'+sub)
         # Only look at videos
         videos = [video for video in files if video.split('.')[-1] == 'avi']
-        for video in videos[2:]:
+        print(videos)
+        for video in videos:
             ## Load in cropped version of
             print('loading ' +video)
             clip = VideoFileClip(cwd+'/'+sub+'/'+video)
@@ -62,15 +64,16 @@ def crop_videos(cwd = None):
                 ## We want to split our video into one hour segments.
                 ## First get the duration in seconds:
                 seconds = cropped.duration
-                segments = np.ceil(seconds/360).astype(int) # rounds up to give the number of distinct segments we need
+                segments = np.ceil(seconds/1200).astype(int) # rounds up to give the number of distinct segments we need
                 for segment in range(segments):
                     # Ensures that the last clip is the right length
+                    print("producing segment "+str(segment) + 'of ' + str(segments))
                     if segment == segments-1:
                         endseg = -1
                     else:
-                        endseg = 360*(segment+1)
-                    cropped_cutout = cropped.subclip(t_start = segment*360,t_end = endseg)
-                    cropped_cutout.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment) '.mp4',codec = 'libx264',preset = 'fast',threads = 2)
+                        endseg = 1200*(segment+1)
+                    cropped_cutout = cropped.subclip(t_start = segment*1200,t_end = endseg)
+                    cropped_cutout.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment)+ '.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 2)
 
             except OSError as e:
 
