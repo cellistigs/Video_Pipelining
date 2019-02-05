@@ -33,7 +33,7 @@ def inspect_videos(cwd = None):
                     f.write(coord)
 
 def crop_videos(cwd = None):
-
+    length = 1200
     if cwd is None:
         # First get current directory
         cwd = os.getcwd()
@@ -61,18 +61,31 @@ def crop_videos(cwd = None):
 
                 print(video.split('.')[0]+'cropped.avi')
                 cropped = clip.crop(x1 = intcoords[0],y1 = intcoords[1],x2 = intcoords[2],y2 = intcoords[3])
-                ## We want to split our video into one hour segments.
+                ## We want to split our video into manageable segments.
+                ## Account for the case that our video analysis failed somewhere in the middle:
+                # We want to be able to extract out the things that have been done so far:
+
                 ## First get the duration in seconds:
                 seconds = cropped.duration
-                segments = np.ceil(seconds/1200).astype(int) # rounds up to give the number of distinct segments we need
+                # If analysis has been found:
+                if len([part in files if part.split('.')[-1]=='mp4']):
+                    done = [re.findall('\d+',part)[-1] for part in files if part.split('.')[-1] == 'mp4']
+                    print(done)
+                    presegs = range(np.ceil(seconds/length).astype(int))
+                    segments = [segment for segment in presegs if segment not in done]
+                    print(segments)
+
+                else:
+
+                    segments = np.ceil(seconds/length).astype(int) # rounds up to give the number of distinct segments we need
                 for segment in range(segments):
                     # Ensures that the last clip is the right length
                     print("producing segment "+str(segment) + 'of ' + str(segments))
                     if segment == segments-1:
                         endseg = -1
                     else:
-                        endseg = 1200*(segment+1)
-                    cropped_cutout = cropped.subclip(t_start = segment*1200,t_end = endseg)
+                        endseg = length*(segment+1)
+                    cropped_cutout = cropped.subclip(t_start = segment*length,t_end = endseg)
                     cropped_cutout.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment)+ '.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 2)
 
             except OSError as e:
