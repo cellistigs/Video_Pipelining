@@ -27,11 +27,14 @@ def inspect_videos(cwd = None):
         videos = [video for video in files if video.split('.')[-1] == 'avi']
         for video in videos:
             clip = VideoFileClip(cwd+'/'+sub+'/'+video)
-            clip.save_frame(cwd+'/'+sub+'/'+video.split('.')[0]+'testframe.png')
-            with open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py','w+') as f:
-                coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
-                for coord in coords:
-                    f.write(coord)
+            try:
+                config = open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py')
+            except:
+                clip.save_frame(cwd+'/'+sub+'/'+video.split('.')[0]+'testframe.png')
+                with open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py','w+') as f:
+                    coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
+                    for coord in coords:
+                        f.write(coord)
 
 def crop_videos(cwd = None):
     length = 1200
