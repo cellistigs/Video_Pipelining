@@ -68,7 +68,7 @@ def crop_videos(cwd = None):
                 ## First get the duration in seconds:
                 seconds = cropped.duration
                 # If analysis has been found:
-                if len([part in files if part.split('.')[-1]=='mp4']):
+                if len([part for part in files if part.split('.')[-1]=='mp4']):
                     done = [re.findall('\d+',part)[-1] for part in files if part.split('.')[-1] == 'mp4']
                     print(done)
                     presegs = range(np.ceil(seconds/length).astype(int))
