@@ -12,6 +12,7 @@ import numpy as np
 import sys
 import subprocess
 import re
+import gc
 def inspect_videos(cwd = None):
 
     if cwd is None:
@@ -26,11 +27,14 @@ def inspect_videos(cwd = None):
         videos = [video for video in files if video.split('.')[-1] == 'avi']
         for video in videos:
             clip = VideoFileClip(cwd+'/'+sub+'/'+video)
-            clip.save_frame(cwd+'/'+sub+'/'+video.split('.')[0]+'testframe.png')
-            with open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py','w+') as f:
-                coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
-                for coord in coords:
-                    f.write(coord)
+            try:
+                config = open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py')
+            except:
+                clip.save_frame(cwd+'/'+sub+'/'+video.split('.')[0]+'testframe.png')
+                with open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py','w+') as f:
+                    coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
+                    for coord in coords:
+                        f.write(coord)
 
 def crop_videos(cwd = None):
     length = 1200
@@ -41,6 +45,7 @@ def crop_videos(cwd = None):
     print(cwd)
     all_sub = next(os.walk(cwd))[1]
     print(all_sub)
+    all_sub = all_sub
     for sub in all_sub:
         files = os.listdir(cwd+'/'+sub)
         # Only look at videos
@@ -68,34 +73,41 @@ def crop_videos(cwd = None):
                 ## First get the duration in seconds:
                 seconds = cropped.duration
                 # If analysis has been found:
-                if len([part for part in files if part.split('.')[-1]=='mp4']):
-                    done = [re.findall('\d+',part)[-1] for part in files if part.split('.')[-1] == 'mp4']
-                    print(done)
+                ident =  video.split('.')[0]+'cropped_'+'part'
+                print(files,ident)
+                print([part for part in files if ident in part.split('.')[0]])
+                if len([part for part in files if ident in part.split('.')[0]]):
+                    done = [int(re.findall('\d+',part.split('.')[0])[-1]) for part in files if ident in part.split('.')[0]]
                     presegs = range(np.ceil(seconds/length).astype(int))
+                    print(done)
+                    print(presegs)
                     segments = [segment for segment in presegs if segment not in done]
                     print(segments)
 
                 else:
 
-                    segments = np.ceil(seconds/length).astype(int) # rounds up to give the number of distinct segments we need
-                for segment in range(segments):
-                    # Ensures that the last clip is the right length
-                    print("producing segment "+str(segment) + 'of ' + str(segments))
-                    if segment == segments-1:
-                        endseg = -1
-                    else:
-                        endseg = length*(segment+1)
-                    cropped_cutout = cropped.subclip(t_start = segment*length,t_end = endseg)
-                    cropped_cutout.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment)+ '.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 2)
+                    segments = range(np.ceil(seconds/length).astype(int)) # rounds up to give the number of distinct segments we need
+                for segment in segments:
+                    try:
+                        # Ensures that the last clip is the right length
+                        print("producing segment "+str(segment) + 'of ' + str(segments))
+                        if segment == presegs[-1]:
 
+                            endseg = -1
+                        else:
+                            endseg = length*(segment+1)
+                        cropped_cutout = cropped.subclip(t_start = segment*length,t_end = endseg)
+                        cropped_cutout.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment)+ '.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 2)
+                    except OSError as e:
+                        print('segment not viable')
+                    gc.collect()
             except OSError as e:
 
                  print(e.errno)
                  print('configuration not loaded')
 
-
-def crop_videos_debug(cwd = None):
-
+def crop_videos_local(cwd = None,localdir):
+    length = 1200
     if cwd is None:
         # First get current directory
         cwd = os.getcwd()
@@ -103,6 +115,7 @@ def crop_videos_debug(cwd = None):
     print(cwd)
     all_sub = next(os.walk(cwd))[1]
     print(all_sub)
+    all_sub = all_sub
     for sub in all_sub:
         files = os.listdir(cwd+'/'+sub)
         # Only look at videos
@@ -112,20 +125,120 @@ def crop_videos_debug(cwd = None):
             ## Load in cropped version of
             print('loading ' +video)
             clip = VideoFileClip(cwd+'/'+sub+'/'+video)
+            try:
+                with open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py','r+') as f:
+                    coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
+                    intcoords = []
+                    for coord in range(len(coords)):
+                        coords[coord] = f.readline()
+                        nums = re.findall('\d+',coords[coord])[1]
+                        intcoords.append(nums)
 
-            with open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py','r+') as f:
-                coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
-                intcoords = []
-                for coord in range(len(coords)):
-                    coords[coord] = f.readline()
-                    nums = re.findall('\d+',coords[coord])[1]
-                    intcoords.append(nums)
+                print(video.split('.')[0]+'cropped.avi')
+                cropped = clip.crop(x1 = intcoords[0],y1 = intcoords[1],x2 = intcoords[2],y2 = intcoords[3])
+                ## We want to split our video into manageable segments.
+                ## Account for the case that our video analysis failed somewhere in the middle:
+                # We want to be able to extract out the things that have been done so far:
 
-            print(video.split('.')[0]+'cropped.avi')
-            cropped = clip.crop(x1 = intcoords[0],y1 = intcoords[1],x2 = intcoords[2],y2 = intcoords[3])
-            cropped_cutout = cropped.subclip(t_start = 0,t_end = 100)
-            #print(cropped_cutout.duration,cropped_cutout.fps)
-            cropped_cutout.write_videofile(cwd+'/'+sub+'/'+video.split('.')[0]+'cropped.avi',codec = 'libx264',preset = 'fast',threads = 2)
+                ## First get the duration in seconds:
+                seconds = cropped.duration
+                # If analysis has been found:
+                # We need to identify the specific video that we are building from.
+
+                ident =  video.split('.')[0]+'cropped_'+'part'
+                print(files,ident)
+                print([part for part in files if ident in part.split('.')[0]])
+                if len([part for part in files if ident in part.split('.')[0]]):
+                    done = [int(re.findall('\d+',part.split('.')[0])[-1]) for part in files if ident in part.split('.')[0]]
+                    presegs = range(np.ceil(seconds/length).astype(int))
+                    print(done)
+                    print(presegs)
+                    segments = [segment for segment in presegs if segment not in done]
+                    print(segments)
+
+                else:
+
+                    segments = range(np.ceil(seconds/length).astype(int)) # rounds up to give the number of distinct segments we need
+                for segment in segments:
+                    try:
+                        # Ensures that the last clip is the right length
+                        print("producing segment "+str(segment) + 'of ' + str(segments))
+                        if segment == presegs[-1]:
+
+                            endseg = -1
+                        else:
+                            endseg = length*(segment+1)
+                        cropped_cutout = cropped.subclip(t_start = segment*length,t_end = endseg)
+                        cropped_cutout.write_videofile(localdir+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment)+ '.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 8)
+                    except OSError as e:
+                        print('segment not viable')
+                    gc.collect()
+            except OSError as e:
+
+                 print(e.errno)
+                 print('configuration not loaded')
+
+
+## We are not doing great on time, so consider a case where you give a path directly
+## to a video, and tell it where to store the additional movies as a separate path.
+def crop_videos_special(videopath,videoname,directorypath):
+    videoid = videopath+'/'+videoname
+    files = os.listdir(directorypath)
+    ## Load in cropped version of
+    print('loading ' +videoid)
+    clip = VideoFileClip(videoid)
+    try:
+        with open(directorypath+'/'+videoname+'config.py','r+') as f:
+            coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
+            intcoords = []
+            for coord in range(len(coords)):
+                coords[coord] = f.readline()
+                nums = re.findall('\d+',coords[coord])[1]
+                intcoords.append(nums)
+
+        print(videoname+'cropped.avi')
+        cropped = clip.crop(x1 = intcoords[0],y1 = intcoords[1],x2 = intcoords[2],y2 = intcoords[3])
+        ## We want to split our video into manageable segments.
+        ## Account for the case that our video analysis failed somewhere in the middle:
+        # We want to be able to extract out the things that have been done so far:
+
+        ## First get the duration in seconds:
+        seconds = cropped.duration
+        # If analysis has been found:
+        # We need to identify the specific video that we are building from.
+
+        ident =  videoname+'cropped_'+'part'
+        print(files,ident)
+        print([part for part in files if ident in part.split('.')[0]])
+        if len([part for part in files if ident in part.split('.')[0]]):
+            done = [int(re.findall('\d+',part.split('.')[0])[-1]) for part in files if ident in part.split('.')[0]]
+            presegs = range(np.ceil(seconds/length).astype(int))
+            print(done)
+            print(presegs)
+            segments = [segment for segment in presegs if segment not in done]
+            print(segments)
+
+        else:
+
+            segments = range(np.ceil(seconds/length).astype(int)) # rounds up to give the number of distinct segments we need
+        for segment in segments:
+            try:
+                # Ensures that the last clip is the right length
+                print("producing segment "+str(segment) + 'of ' + str(segments))
+                if segment == presegs[-1]:
+
+                    endseg = -1
+                else:
+                    endseg = length*(segment+1)
+                cropped_cutout = cropped.subclip(t_start = segment*length,t_end = endseg)
+                cropped_cutout.write_videofile(directorypath+'/'+videoname+'cropped_'+'part' +str(segment)+ '.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 2)
+            except OSError as e:
+                print('segment not viable')
+            gc.collect()
+    except OSError as e:
+
+         print(e.errno)
+         print('configuration not loaded')
 
 
 def compress_videos(cwd = None):
