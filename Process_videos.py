@@ -50,6 +50,8 @@ def motion_detection(cwd = None):
             else:
                 print('video: '+part +'has not been cropped')
     return motiondict
+
+# def nest_detection()
 if __name__ == "__main__":
     cwd = sys.argv[1]
     moving = motion_detection(cwd)
