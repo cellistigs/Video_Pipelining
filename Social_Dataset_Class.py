@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
@@ -418,7 +419,7 @@ class social_dataset(object):
         # its reference counterpoint
         mouse_nb = pindex/5
         other_mouse = abs(mouse_nb-1)
-        other_pindex = (other_mouse-mouse_nb)*5+pindex
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
         mice = [pindex,other_pindex]
         all_vars = []
         all_outs = []
@@ -433,7 +434,7 @@ class social_dataset(object):
         ## Ugly: we need to make sure that we don't index past what we can compare to....
 
 #         compare_max = np.min([len(target_indices)-windowlength-1,len(reference_indices)-windowlength-1])
-        compare_max = len(target_indices)-windowlength-1
+        compare_max = len(target_indices)-windowlength-2
         for i in range(compare_max):
 
             current_vars = []
@@ -469,7 +470,7 @@ class social_dataset(object):
         # its reference counterpoint
         mouse_nb = pindex/5
         other_mouse = abs(mouse_nb-1)
-        other_pindex = (other_mouse-mouse_nb)*5+pindex
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
         mice = [pindex,other_pindex]
         all_vars = []
         all_outs = []
@@ -487,7 +488,7 @@ class social_dataset(object):
         ## Ugly: we need to make sure that we don't index past what we can compare to....
 
 #         compare_max = np.min([len(target_indices)-windowlength-1,len(reference_indices)-windowlength-1])
-        compare_max = np.min([len(target_indices)-windowlength-1,len(reference_centroid_indices)-windowlength-1])
+        compare_max = np.min([len(target_indices)-windowlength-2,len(reference_centroid_indices)-windowlength-2])
 
         for i in range(compare_max):
 
@@ -520,7 +521,7 @@ class social_dataset(object):
     def filter_crosscheck_replace(self,pindex):
         mouse_nb = pindex/5
         other_mouse = abs(mouse_nb-1)
-        other_pindex = (other_mouse-mouse_nb)*5+pindex
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
         outs = self.filter_crosscheck(pindex)
         outs_processed = ([element for out in outs for element in out])
         if not outs_processed:
@@ -541,7 +542,7 @@ class social_dataset(object):
     def filter_check_replace(self,pindex):
         mouse_nb = pindex/5
         other_mouse = abs(mouse_nb-1)
-        other_pindex = (other_mouse-mouse_nb)*5+pindex
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
         outs = self.filter_check(pindex)
         outs_processed = ([element for out in outs for element in out])
         if not outs_processed:
