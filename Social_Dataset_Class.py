@@ -101,6 +101,7 @@ class social_dataset(object):
         length_allowed = len(allowed)
         # First compute the part index as appropriate:
         part = np.array([[pindex]]).repeat(length_allowed,axis = 0)
+
         full_index = np.concatenate((allowed,part),axis = 1)
         return full_index
 
@@ -154,6 +155,58 @@ class social_dataset(object):
 
 
     # Now define a plotting function:
+    # Also plot a tracked frame on an image:
+    def plot_image(self,part_numbers,frame_nb):
+        allowed_indices = [frame_nb in self.allowed_index_full[part_number][:,0] for part_number in part_numbers]
+        colors = ['red','blue']
+        point_colors = [colors[allowed] for allowed in allowed_indices]
+        relevant_trajectories = self.render_trajectories(to_render = part_numbers)
+        print(relevant_trajectories[0].shape)
+        relevant_points = [traj[frame_nb,:] for traj in relevant_trajectories]
+        relevant_points = np.array(relevant_points)
+        assert np.all(np.shape(relevant_points) == (len(part_numbers),2))
+        print(self.movie.duration,self.movie.fps)
+
+        # Now load in video:
+        try:
+            frame = self.movie.get_frame(frame_nb/self.movie.fps)
+            fig,ax = plt.subplots()
+            ax.imshow(frame)
+            ax.axis('off')
+            ax.scatter(relevant_points[:,0],relevant_points[:,1],c = point_colors)
+            plt.show()
+        except OSError as error:
+            print(error)
+
+    # Plot a tracked frame on an image, with raw trackings for comparison:
+    def plot_image_compare(self,part_numbers,frame_nb):
+        allowed_indices = [frame_nb in self.allowed_index_full[part_number][:,0] for part_number in part_numbers]
+        colors = ['red','blue']
+        shapes = ['o','v']
+        point_colors = [colors[allowed] for allowed in allowed_indices]
+        relevant_trajectories = self.render_trajectories(to_render = part_numbers)
+        relevant_points = [traj[frame_nb,:] for traj in relevant_trajectories]
+        relevant_points = np.array(relevant_points)
+
+        rawtrajectories = self.dataset[self.scorer].values[frame_nb,:]
+        a = rawtrajectories.reshape(10,3)
+        relevant_raw = np.array([part[:2] for i, part in enumerate(a) if i in part_numbers])
+        print(relevant_raw.shape)
+        assert np.all(np.shape(relevant_points) == (len(part_numbers),2))
+        assert np.all(np.shape(relevant_raw) == (len(part_numbers),2))
+        print(self.movie.duration,self.movie.fps)
+
+        # Now load in video:
+        try:
+            frame = self.movie.get_frame(frame_nb/self.movie.fps)
+            fig,ax = plt.subplots()
+            ax.imshow(frame)
+            ax.axis('off')
+            ax.scatter(relevant_points[:,0],relevant_points[:,1],c = point_colors)
+            ax.scatter(relevant_raw[:,0],relevant_raw[:,1],c = point_colors,marker = 'v')
+            plt.show()
+        except OSError as error:
+            print(error)
 
     def plot_trajectory(self,part_numbers,start = 0,end = -1,cropx = 0,cropy = 0,axes = True,save = False,**kwargs):
         # First define the relevant part indices:
@@ -358,7 +411,7 @@ class social_dataset(object):
         return angles
     # Import the relevant movie file
     def import_movie(self,moviepath):
-        self.movie = VideoFileClip('../../Downloads/V118_03222018_cohousing-Camera-1-Animal-1-Segment1.avi')
+        self.movie = VideoFileClip(moviepath)
 #         self.movie.reader.initialize()
     # Plot the movie file, and overlay the tracked points
     def show_frame(self,frame,plotting= True):
@@ -383,8 +436,6 @@ class social_dataset(object):
         test_indices_sample_end = target_indices[sample_indices_absolute[-1]]
 
         ## We have to find the appropriate indices in the reference trajectory: those equal to or just outside the test indices
-#         if ref_indices[0] > test_indices_sample_start[0]:
-#             start_ref_ref = test_indices_sample_start
         start_rel_ref,end_rel_ref = np.where(ref_indices <= test_indices_sample_start)[0][-1],np.where(ref_indices >= test_indices_sample_end)[0][0]
 
         sample_indices_rel = ref_indices[[start_rel_ref-1,start_rel_ref,end_rel_ref-1,end_rel_ref]]
@@ -412,28 +463,20 @@ class social_dataset(object):
         sampled_points = traj_test[sample_indices_absolute[0]:sample_indices_absolute[-1],:]
         return interped_points,sampled_points,comp_indices_rel_test
 
-    def filter_check(self,pindex):
-        windowlength = 30
+    def filter_check(self,pindex,windowlength,varthresh):
+
         sample_indices = lambda i: [i,i+1,windowlength+i+1,windowlength+i+2]
         # Define the indices you want to check: acceptable indices in both the part trajectory for this animal and
         # its reference counterpoint
         mouse_nb = pindex/5
-        other_mouse = abs(mouse_nb-1)
-        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
-        mice = [pindex,other_pindex]
+
         all_vars = []
         all_outs = []
 
-        reference = self.render_trajectory_full(other_pindex)
+
         target = self.render_trajectory_full(pindex)
-        reference_indices = self.allowed_index_full[other_pindex]
         target_indices = self.allowed_index_full[pindex]
 
-#         numerical_allowed_ref = [index for index in self.allowed_index_full[pindex][:,0] if index+14<len(reference)] ## we have to skim at the end
-        numerical_allowed_tar = [index for index in self.allowed_index_full[other_pindex][:,0] if index+14<len(target)] ## we have to skim at the end
-        ## Ugly: we need to make sure that we don't index past what we can compare to....
-
-#         compare_max = np.min([len(target_indices)-windowlength-1,len(reference_indices)-windowlength-1])
         compare_max = len(target_indices)-windowlength-2
         for i in range(compare_max):
 
@@ -443,16 +486,8 @@ class social_dataset(object):
                 interped,sampled,indices = self.deviance_final(i,windowlength,target,target_indices,target,target_indices)
                 linewise_var = np.max(np.max(abs(interped-sampled),axis = 0))
                 current_vars.append(linewise_var)
-                if linewise_var > 30:
-                    mis = np.where(abs(interped-sampled)>20)[0]
-#                     # Cross check with the other trajectory:
-#                     cross_interped,cross_sampled,indices = self.deviance_final(i,windowlength,reference,reference_indices,target,target_indices)
-#                     # Now check where the points are closer to this cross trajectory than the current one:
-#                     std_diff = np.linalg.norm(interped-sampled,axis = 1)
-#                     cross_diff = np.linalg.norm(cross_interped-cross_sampled,axis = 1)
-#                     # Look for points where the point is __significantly__ closer to the cross than the standard linearization:
-#                     ratio = cross_diff/std_diff
-#                     mis = np.where(ratio<0.5)[0]
+                if linewise_var > varthresh:
+                    mis = np.where(abs(interped-sampled)>varthresh)[0]
                     if not list(mis):
                         pass
                     else:
@@ -528,7 +563,7 @@ class social_dataset(object):
             pass
         else:
             outs_processed = np.unique(np.concatenate(outs_processed))
-        print(outs_processed)
+
         okay_indices = np.array([index for index in self.allowed_index_full[pindex] if index[0] not in outs_processed])
         self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
 #         invouts = self.filter_crosscheck(other_pindex))
@@ -539,11 +574,9 @@ class social_dataset(object):
             print('crosschecking '+ str(self.part_dict[pindex]))
             self.filter_crosscheck_replace(pindex)
 
-    def filter_check_replace(self,pindex):
+    def filter_check_replace(self,pindex,windowlength= 30,varthresh=30):
         mouse_nb = pindex/5
-        other_mouse = abs(mouse_nb-1)
-        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
-        outs = self.filter_check(pindex)
+        outs = self.filter_check(pindex,windowlength,varthresh)
         outs_processed = ([element for out in outs for element in out])
         if not outs_processed:
             pass
@@ -552,14 +585,58 @@ class social_dataset(object):
         print(outs_processed)
         okay_indices = np.array([index for index in self.allowed_index_full[pindex] if index[0] not in outs_processed])
         self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
-#         invouts = self.filter_crosscheck(other_pindex))
-#         print(out.intersection(invouts))
-#         print(set(outs).intersection(set(invouts)),"printing")
 
     def filter_check_replaces(self,indices):
         for pindex in indices:
             print('checking '+ str(self.part_dict[pindex]))
             self.filter_check_replace(pindex)
+
+    def filter_check_v2(self,pindex,windowlength,varthresh):
+
+        sample_indices = lambda i: [i,i+1,windowlength+i+1,windowlength+i+2]
+        # Define the indices you want to check: acceptable indices in both the part trajectory for this animal and
+        # its reference counterpoint
+        mouse_nb = pindex/5
+
+        all_vars = []
+        all_outs = []
+
+
+        target = self.render_trajectory_full(pindex)
+        target_indices = self.allowed_index_full[pindex]
+
+        compare_max = len(target_indices)-windowlength-2
+        for i in range(compare_max):
+
+            current_vars = []
+            current_outs = []
+            for j in range(2):
+                interped,sampled,indices = self.deviance_final(i,windowlength,target,target_indices,target,target_indices)
+                linewise_var = np.max(np.max(abs(interped-sampled),axis = 0))
+                current_vars.append(linewise_var)
+                if linewise_var > varthresh:
+                    mis = -1*(np.max((abs(interped-sampled)>varthresh),axis = 1)*2-1)
+                else:
+                    mis = np.ones(np.shape(interped)[0])
+                scores[i+1:i+windowlength+1] += mis
+        return scores
+
+    def filter_check_replace_v2(self,pindex,windowlength= 45,varthresh=40):
+        mouse_nb = pindex/5
+        preouts = self.filter_check(pindex,windowlength,varthresh)
+        outs = np.where(preouts<0)[0]
+        if not len(outs):
+            pass
+        else:
+            outs = np.unique(outs)
+
+        okay_indices = np.array([index for index in self.allowed_index_full[pindex] if index[0] not in outs])
+        self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
+
+    def filter_check_replaces_v2(self,indices,windowlength= 45,varthresh=40):
+        for pindex in indices:
+            print('checking '+ str(self.part_dict[pindex]))
+            self.filter_check_replace_v2(pindex,windowlength= 45,varthresh=40)
 
     def return_cropped_view(self,mice,frame,radius = 64):
         mouse_views = []
