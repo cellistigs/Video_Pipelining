@@ -9,7 +9,7 @@ import subprocess
 import re
 import gc
 from Social_Dataset_Class import social_dataset
-
+import joblib
 
 def motion_detection(cwd = None):
     motiondict = {}
@@ -54,4 +54,4 @@ if __name__ == "__main__":
     cwd = sys.argv[1]
     moving = motion_detection(cwd)
 
-    np.save('./testdict',moving)
+    joblib.dump(moving,"motiondict")
