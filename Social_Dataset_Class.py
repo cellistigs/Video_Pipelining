@@ -13,6 +13,7 @@ from skimage.util import img_as_ubyte
 from skimage.transform import rescale
 from scipy.ndimage import rotate
 import tensorflow as tf
+from tqdm import tqdm
 import sys
 
 
@@ -357,6 +358,14 @@ class social_dataset(object):
         for index in indices:
             self.allowed_index_full[index] = self.simple_index_maker(index,self.time_index[:,np.newaxis])
 
+############# End of filtering functions. On to processing functions.
+
+###
+    def proximity(self):
+        virg,moth = self.render_trajectories([3,8])
+        diff = virg-moth
+        dist = np.linalg.norm(diff,axis = 1)
+        return dist
 
     def interhead_position(self,mouse_id):
         # Returns positions between the head for a given mouse
@@ -601,35 +610,35 @@ class social_dataset(object):
         all_vars = []
         all_outs = []
 
-
         target = self.render_trajectory_full(pindex)
         target_indices = self.allowed_index_full[pindex]
 
+        scores = np.zeros(len(target))
+
         compare_max = len(target_indices)-windowlength-2
-        for i in range(compare_max):
+        for i in tqdm(range(compare_max)):
 
             current_vars = []
             current_outs = []
-            for j in range(2):
-                interped,sampled,indices = self.deviance_final(i,windowlength,target,target_indices,target,target_indices)
-                linewise_var = np.max(np.max(abs(interped-sampled),axis = 0))
-                current_vars.append(linewise_var)
-                if linewise_var > varthresh:
-                    mis = -1*(np.max((abs(interped-sampled)>varthresh),axis = 1)*2-1)
-                else:
-                    mis = np.ones(np.shape(interped)[0])
-                scores[i+1:i+windowlength+1] += mis
+
+            interped,sampled,indices = self.deviance_final(i,windowlength,target,target_indices,target,target_indices)
+            linewise_var = np.max(np.max(abs(interped-sampled),axis = 0))
+            current_vars.append(linewise_var)
+            if linewise_var > varthresh:
+                mis = -1*(np.max((abs(interped-sampled)>varthresh),axis = 1)*2-1)
+            else:
+                mis = np.ones(np.shape(interped)[0])
+            scores[i+1:i+windowlength+1] += mis
         return scores
 
     def filter_check_replace_v2(self,pindex,windowlength= 45,varthresh=40):
         mouse_nb = pindex/5
-        preouts = self.filter_check(pindex,windowlength,varthresh)
+        preouts = self.filter_check_v2(pindex,windowlength,varthresh)
         outs = np.where(preouts<0)[0]
         if not len(outs):
             pass
         else:
             outs = np.unique(outs)
-
         okay_indices = np.array([index for index in self.allowed_index_full[pindex] if index[0] not in outs])
         self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
 
