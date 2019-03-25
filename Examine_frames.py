@@ -1,4 +1,4 @@
-## i script to search through a set of videos organized in the relevant file structure,
+## A script to search through a set of videos organized in the relevant file structure,
 ## and retrieve one frame from each. It will involve functions that take as arguments
 ## a cropping frame, and a rotation if necessary. The rotation will be applied first.
 
