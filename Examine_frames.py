@@ -410,9 +410,11 @@ def crop_videos_p(cwd = None):
             segments = presegs 
         # This determines how we will split our resources: 
         segments_split = index_segments(segments,threads)
+        print('Parallelizing video processing into '+str(len(segments_split))+' different threads')
         p = multiprocessing.Pool()
         ## We need to make a function object to get around the lack of lambda compatibility with multiprocessing: 
         p.map(Renderer(cwd,video,length,presegs[-1]),segments_split)
+        print('Done')
 
 
 
