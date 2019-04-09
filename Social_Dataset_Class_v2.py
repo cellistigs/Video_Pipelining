@@ -2139,6 +2139,3 @@ class social_dataset(object):
 #             for filename in glob.glob('testframe*.png'):
 #                 os.remove(filename)
 
-print('out')
-for i in range(10):
-    print(i*10)
