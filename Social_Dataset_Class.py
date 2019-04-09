@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.interpolate import interp1d
+from scipy.signal import savgol_filter
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
@@ -12,9 +13,11 @@ import matplotlib.gridspec as gridspec
 from skimage.util import img_as_ubyte
 from skimage.transform import rescale
 from scipy.ndimage import rotate
+from scipy.ndimage.morphology import binary_dilation
 import tensorflow as tf
 from tqdm import tqdm
 import sys
+import pdb
 
 
 ### Geometry helper functions
@@ -84,6 +87,48 @@ def sorter(index,bp = 5,cent_ind = 3):
     rel.pop(cent_ind)
     return center,rel
 
+## helper function for segmentation:
+def find_segments(indices):
+    differences = np.diff(indices)
+    all_intervals = []
+    ## Initialize with the first element added:
+    interval = []
+    interval.append(indices[0])
+    for i,diff in enumerate(differences):
+        if diff == 1:
+            pass # interval not yet over
+        else:
+            # last interval ended
+            if interval[0] == indices[i]:
+                interval.append(indices[i]+1)
+            else:
+                interval.append(indices[i])
+            all_intervals.append(interval)
+            # start new interval
+            interval = [indices[i+1]]
+        if i == len(differences)-1:
+            interval.append(indices[-1]+1)
+            all_intervals.append(interval)
+    return all_intervals
+
+## Helper function to return a segment given relevant information. Handles corner cases:
+def segment_getter(trajectories,segs,segind,mouseind):
+    ## If segind is negative, return the first element of the trajectory:
+    if segind <0:
+        segment = trajectories[mouseind][0:1,:]
+        return segment
+    else:
+        segbounds = segs[mouseind][segind]
+        segment = trajectories[mouseind][segbounds[0]:segbounds[1]]
+        return segment
+
+def interpolate_isnans(trajectories,out_array):
+    vgood,mgood = np.where(~np.isnan(out_array[:,0:1]))[0],np.where(~np.isnan(out_array[:,1:2]))[0]
+    good_valsv,good_valsm = trajectories[0][vgood,:],trajectories[1][mgood,:]
+    vinterp = interp1d(vgood,good_valsv,axis = 0,bounds_error = False,fill_value = 'extrapolate',kind = 'slinear')
+    minterp = interp1d(mgood,good_valsm,axis = 0,bounds_error = False,fill_value = 'extrapolate',kind = 'slinear')
+    return vinterp,minterp
+
 class social_dataset(object):
     def __init__(self,filepath,vers = 0):
         self.dataset = pd.read_hdf(filepath)
@@ -95,6 +140,7 @@ class social_dataset(object):
         self.time_index = np.arange(self.dataset.shape[0])
         self.allowed_index = [self.time_index[:,np.newaxis] for _ in self.part_list] ## set of good indices for each part!
         self.allowed_index_full = [self.simple_index_maker(part,self.allowed_index[part]) for part in self.part_index]
+        self.filter_check_counts = [[] for i in self.part_index]
         self.vers = vers ## with multiple animal index or not
 
     # Helper function: index maker. Takes naive index constructs and returns a workable set of indices for the dataset.
@@ -106,7 +152,6 @@ class social_dataset(object):
         full_index = np.concatenate((allowed,part),axis = 1)
         return full_index
 
-
     # Trajectory selector:
     def select_trajectory(self,pindex):
         part_name = self.part_dict[pindex]
@@ -116,18 +161,6 @@ class social_dataset(object):
         else:
             rawtrajectory = self.dataset[self.scorer][part_name].values[:,:2]
         return rawtrajectory
-
-    # Define a trajectory rendering function for any part:
-
-#     def render_trajectory(self,pindex):
-#         rawtrajectory = self.select_trajectory(pindex)
-#         part_name = self.part_dict[pindex]
-#         part_okindex = self.allowed_index[pindex]
-
-#         allowed_data = rawtrajectory[part_okindex,:]
-#         filtered_x,filtered_y = np.interp(self.time_index,part_okindex,allowed_data[:,0]),np.interp(self.time_index,part_okindex,allowed_data[:,1])
-#         filtered_part = np.concatenate((filtered_x[:,np.newaxis],filtered_y[:,np.newaxis]),axis = 1)
-#         return filtered_part
 
     # if a trajectory could be influenced by other trajectories:
     def render_trajectory_full(self,pindex):
@@ -141,6 +174,31 @@ class social_dataset(object):
         filtered_x,filtered_y = np.interp(self.time_index,part_okindex[:,0],out[:,0]),np.interp(self.time_index,part_okindex[:,0],out[:,1])
         filtered_part = np.concatenate((filtered_x[:,np.newaxis],filtered_y[:,np.newaxis]),axis = 1)
         return filtered_part
+
+
+    # # if a trajectory could be influenced by other trajectories:
+    # def _render_trajectory_full(self,pindex):
+    #     rawtrajectories = self.dataset[self.scorer].values
+    #     part_okindex = self.allowed_index_full[pindex]
+    #     time = part_okindex[:,0:1]
+    #     x = part_okindex[:,1:2]*3
+    #     y = part_okindex[:,1:2]*3+1
+    #     coords = np.concatenate((x,y),axis = 1)
+    #     out = rawtrajectories[time,coords]
+    #     f = interp1d(part_okindex[:,0],out,axis = 0,kind = 'cubic')
+    #     # filtered_x,filtered_y = np.interp(self.time_index,part_okindex[:,0],out[:,0]),np.interp(self.time_index,part_okindex[:,0],out[:,1])
+    #     filtered_part = f(self.time_index)
+    #     return filtered_part
+
+    def render_trajectory_valid(self,pindex):
+        rawtrajectories = self.dataset[self.scorer].values
+        part_okindex = self.allowed_index_full[pindex]
+        time = part_okindex[:,0:1]
+        x = part_okindex[:,1:2]*3
+        y = part_okindex[:,1:2]*3+1
+        coords = np.concatenate((x,y),axis = 1)
+        out = rawtrajectories[time,coords]
+        return out,time
 
     # For multiple trajectories:
 
@@ -180,10 +238,12 @@ class social_dataset(object):
             print(error)
 
     # Plot a tracked frame on an image, with raw trackings for comparison:
-    def plot_image_compare(self,part_numbers,frame_nb):
+    def plot_image_compare(self,part_numbers,frame_nb,internal = False,figureparams = None):
         allowed_indices = [frame_nb in self.allowed_index_full[part_number][:,0] for part_number in part_numbers]
-        colors = ['red','blue']
+        colors = ['blue','red']
         shapes = ['o','v']
+        colorsequence = [colors[i >= 5] for i in part_numbers]
+
         point_colors = [colors[allowed] for allowed in allowed_indices]
         relevant_trajectories = self.render_trajectories(to_render = part_numbers)
         relevant_points = [traj[frame_nb,:] for traj in relevant_trajectories]
@@ -192,27 +252,122 @@ class social_dataset(object):
         rawtrajectories = self.dataset[self.scorer].values[frame_nb,:]
         a = rawtrajectories.reshape(10,3)
         relevant_raw = np.array([part[:2] for i, part in enumerate(a) if i in part_numbers])
-        print(relevant_raw.shape)
+
         assert np.all(np.shape(relevant_points) == (len(part_numbers),2))
         assert np.all(np.shape(relevant_raw) == (len(part_numbers),2))
-        print(self.movie.duration,self.movie.fps)
 
         # Now load in video:
         try:
             frame = self.movie.get_frame(frame_nb/self.movie.fps)
-            fig,ax = plt.subplots()
+            if figureparams is None:
+                fig,ax = plt.subplots()
+            else:
+                fig,ax = figureparams[0],figureparams[1]
+
+            shape = np.array(np.shape(frame))[:2].reshape((1,2))
             ax.imshow(frame)
             ax.axis('off')
-            ax.scatter(relevant_points[:,0],relevant_points[:,1],c = point_colors)
-            ax.scatter(relevant_raw[:,0],relevant_raw[:,1],c = point_colors,marker = 'v')
-            plt.show()
-        except OSError as error:
-            print(error)
+
+            relevant_points[relevant_points == 0] += 1
+            relevant_points = np.minimum(relevant_points,shape-1)
+            ax.scatter(relevant_points[:,0],relevant_points[:,1],c = colorsequence,marker = shapes[0])
+            ax.scatter(relevant_raw[:,0],relevant_raw[:,1],c = colorsequence,marker = shapes[1])
+            if figureparams is not None:
+                return fig,ax
+            else:
+                if internal == False:
+                    plt.show()
+                else:
+                    return mplfig_to_npimage(fig)
+
+        except AttributeError as error:
+            print(error,' Plotting frames without video')
+            if figureparams is None:
+                fig,ax = plt.subplots()
+            else:
+                fig,ax = figureparams[0],figureparams[1]
+            ax.set_xlim([0,630-330])
+            ax.set_ylim([480-70,0])
+            ax.set_aspect('equal')
+            ax.scatter(relevant_points[:,0],relevant_points[:,1],c = colorsequence,marker = shapes[0])
+            ax.scatter(relevant_raw[:,0],relevant_raw[:,1],c = colorsequence,marker = shapes[1])
+            if figureparams is not None:
+                return fig,ax
+            else:
+                if internal == False:
+                    plt.show()
+                else:
+                    return mplfig_to_npimage(fig)
+
+
+    # Plot a tracked frame on an image, with raw trackings for comparison:
+    def plot_clip_compare(self,part_numbers,frame_sequence,fps):
+        ## See how many frames we should worry about:
+        length = len(frame_sequence)
+        duration = length/fps
+        ## Make function to pass to clipwriter:
+        framemaker = lambda t: self.plot_image_compare(part_numbers,frame_sequence[int(t*fps)],internal = True)
+        animation = VideoClip(framemaker,duration = duration)
+        return animation
+
+    def plot_clip_with_ethogram(self,part_numbers,interval,fps,title):
+        length = len(interval)
+        duration = length/fps
+
+        ## Pull the ethogram we will use:
+        vetho = self.nest_ethogram(0)
+        detho = self.nest_ethogram(1)
+        petho = self.shepherding_ethogram()
+        ethox = np.arange(len(vetho))
+        fig = plt.figure(figsize = (15,10))
+        ax0 = plt.subplot2grid((5, 4), (0, 0), rowspan=5,colspan = 2)
+        ax1 = plt.subplot2grid((5, 4), (1, 2), colspan = 2)
+        ax2 = plt.subplot2grid((5, 4), (3, 2), colspan = 2)
+        ax = [ax0,ax1,ax2]
+        ax[1].plot(vetho,color ='blue',label = 'nest')
+        ax[2].plot(detho,color = 'red',label = 'nest')
+        ax[1].fill_between(ethox,0,vetho,color = 'blue')
+        ax[2].fill_between(ethox,0,detho,color = 'red')
+        ax[1].set_title('Virgin Ethogram')
+        ax[2].set_title('Dam Ethogram')
+        [ax[i].plot(petho,color = 'orange',label = 'pursuit') for i in [1,2]]
+        [ax[i].legend() for i in [1,2]]
+        ## define a small function we will call as a lambda function:
+        def framemaker(t,vetho,detho,petho):
+            index = int(t*fps)
+            ax[0].clear()
+            fig0,ax0 = self.plot_image_compare(part_numbers,interval[index],figureparams=(fig,ax[0]))
+            ## Plot markers based on ethogram too:
+            if vetho[interval[index]] or detho[interval[index]] or petho[interval[index]]:
+                ax0.tick_params(
+                    which='both',      # both major and minor ticks are affected
+                    bottom=False,      # ticks along the bottom edge are off
+                    top=False,         # ticks along the top edge are off
+                    left = False,
+                    labelbottom=False,
+                    labelleft=False) # labels along the bottom edge are off
+                ax0.axis('on')
+            if vetho[interval[index]]:
+                ax0.spines['left'].set_linewidth(2)
+                ax0.spines['left'].set_color('blue')
+            if detho[interval[index]]:
+                ax0.spines['right'].set_linewidth(2)
+                ax0.spines['right'].set_color('red')
+            if petho[interval[index]]:
+                ax0.scatter(270,15,color = 'orange',marker = 'o',s = 100)
+            ax[1].axvline(x = interval[index],color = 'black',alpha = 0.5)
+            ax[2].axvline(x = interval[index],color = 'black',alpha = 0.5)
+            return mplfig_to_npimage(fig)
+
+        make_frame = lambda t:framemaker(t,vetho,detho,petho)
+        clip = VideoClip(make_frame,duration=duration)
+        clip.write_videofile(title,fps = fps)
+
 
     def plot_trajectory(self,part_numbers,start = 0,end = -1,cropx = 0,cropy = 0,axes = True,save = False,**kwargs):
         # First define the relevant part indices:
         relevant_trajectories = self.render_trajectories(to_render = part_numbers)
-        names = ['Virgin','Mother']
+        names = ['Virgin','Dam']
         mouse_id = part_numbers[0]/5
         if axes == True:
             fig,axes = plt.subplots()
@@ -236,7 +391,7 @@ class social_dataset(object):
     def gif_trajectory(self,part_numbers,start = 0,end = -1,fps = 60.,cropx = 0,cropy = 0,save = False,**kwargs):
         # First define the relevant part indices:
         relevant_trajectories = self.render_trajectories(to_render = part_numbers)
-        names = ['Virgin','Mother']
+        names = ['Virgin','Dam']
         mouse_id = part_numbers[0]/5
         if end == -1:
             duration = relevant_trajectories.shape[0]-start
@@ -262,7 +417,42 @@ class social_dataset(object):
         return animation
 
 
+####### Quantifying errors:
+    ## Look at a patch of the underlying image:
+    def make_patches(self,frames,part,radius):
+        points = self.render_trajectory_full(part)[frames,:]
+        xcents,ycents = points[:,0],points[:,1]
+        xsize,ysize = self.movie.size
+        all_clipped = np.zeros((len(frames),2*radius,2*radius,3)).astype(np.uint8)
+        for i,frame in enumerate(frames):
+            image = self.movie.get_frame((frame)/self.movie.fps)
+            xcent,ycent = xcents[i],ycents[i]
+            xmin,xmax,ymin,ymax = int(xcent-radius),int(xcent+radius),int(ycent-radius),int(ycent+radius)
+            ## do edge detection:
+            pads  = np.array([[ymin - 0,ysize - ymax],[xmin - 0,xsize - xmax],[0,0]])
 
+
+            clip = image[ymin:ymax,xmin:xmax]
+            # print(clip,'makedocip')
+            if np.any(pads < 0):
+                topad = pads<0
+                padding = -1*pads*topad
+                clip = np.pad(clip,padding,'edge')
+            all_clipped[i,:,:,:] = clip.astype(np.uint8)
+        return all_clipped
+
+    def patch_grandhist(self,frames,part,radius):
+        dataarray = self.make_patches(frames,part,radius)
+        hists = [np.histogram(dataarray[:,:,:,i],bins = np.linspace(0,255,256)) for i in range(3)]
+        return hists
+
+    def patch_hist(self,frames,part,radius):
+        dataarray = self.make_patches(frames,part,radius)
+        hists = [[np.histogram(dataarray[f,:,:,i],bins = np.linspace(0,255,256)) for i in range(3)]for f in range(len(frames))]
+        return hists
+
+    # def patch_outliers
+#######
 
     def calculate_speed(self,pindex):
         rawtrajectory = self.select_trajectory(pindex)
@@ -357,15 +547,149 @@ class social_dataset(object):
         print('resetting filters...')
         for index in indices:
             self.allowed_index_full[index] = self.simple_index_maker(index,self.time_index[:,np.newaxis])
-
+        self.filter_check_counts = [[] for i in self.part_index]
 ############# End of filtering functions. On to processing functions.
 
 ###
+## Calculates the velocity of a mouse based on centroid:
+    def velocity(self,mouse,windowlength,polyorder,filter = False):
+        mouse = self.render_trajectories([mouse*5+3])[0]
+        diffs = np.diff(mouse,axis = 0)
+        if filter == True:
+            diffs = savgol_filter(diffs,windowlength,polyorder,axis = 0)
+        return diffs
+    ## Determines when the velocities of the two mice are tracking each other.
+    def tracking(self,windowlength = 15,polyorder = 3,filter = True):
+        mice = [0,1]
+        vels = []
+        for mouse in mice:
+            vel = self.velocity(mouse,windowlength,polyorder,filter = True)
+            vels.append(vel)
+        # Batch dot product
+        similarity = np.sum(np.multiply(vels[0],vels[1]),axis = 1)
+        return similarity
+
+    ## Not just when mice are tracking, but
+    def orderedtracking(self,windowlength = 15,polyorder = 3,filter = True):
+        mice = [0,1]
+        vels = []
+        for mouse in mice:
+            vel = self.velocity(mouse,windowlength,polyorder,filter = True)
+            vels.append(vel)
+        # Batch dot product
+        similarity = np.sum(np.multiply(vels[0],vels[1]),axis = 1)
+        # Find the average vector between their directions:
+        average = np.mean(np.stack(vels),axis = 0)
+
+        ## Give the difference in positions between the two animals
+        relvec = self.relative_vector(0) ## Position of dam w.r.t. virgin.
+
+        ## is the dam in front of the virgin or vice versa?
+        pose_align = np.sum(np.multiply(average,relvec[:-1,:]),axis = 1)/(np.linalg.norm(average,axis = 1)*np.linalg.norm(relvec[:-1,:],axis = 1))
+
+        return similarity,pose_align
+
+    def shepherding_ethogram(self):
+        similarity = self.tracking()
+        points = np.where(similarity>10)[0]
+        onehot = np.array([i in points for i in range(len(similarity)+1)])
+        return onehot
+
+    def nest_ethogram(self,mouse):
+        try:
+            nest_location = self.bounds
+            ## retrieve trajectory:
+            out = self.render_trajectories([mouse*5+3])[0]
+            xcheck = (out[:,0]<self.bounds[0])
+            ycheck = (out[:,1]<self.bounds[1])
+            compound = np.logical_not(xcheck + ycheck)
+        except AttributeError as error:
+            print(error)
+
+        return compound
+    ## Give a full ethogram that shows the activity of both mice, and shepherding
+    ## events interspersed
+    def full_ethogram(self,save = False):
+        ## First get the nest ethograms of each animal:
+        in_nest = []
+        for mouse in [0,1]:
+            in_nest.append(self.nest_ethogram(mouse))
+        ## Now get the shepherding ethogram:
+        shep = self.shepherding_ethogram()
+        fig,ax = plt.subplots(2,1)
+        names = ['Virgin','Dam']
+        for mouse in [0,1]:
+            b = in_nest[mouse]
+            b_x = range(len(b))
+            ax[mouse].plot(b_x,b,label = 'nest')
+            ax[mouse].fill_between(b_x,0,b)
+            ax[mouse].plot(b_x,shep,label = 'pursuit')
+            ax[mouse].set_title(names[mouse]+ ' Ethogram')
+        plt.legend()
+        plt.tight_layout()
+        if save == True:
+            plt.savefig(self.dataset_name.split('.')[0]+' Ethogram')
+        plt.show()
+
+    def part_dist(self,part0,part1):
+        traj0,traj1 = self.render_trajectories([part0,part1])
+        diff = traj0-traj1
+        dist = np.linalg.norm(diff,axis = 1)
+        return dist
+
     def proximity(self):
         virg,moth = self.render_trajectories([3,8])
         diff = virg-moth
         dist = np.linalg.norm(diff,axis = 1)
         return dist
+
+    def proximity_nonest(self):
+        close = np.where(self.proximity()<50)[0]
+        ## Check where neither mouse is in the nest:
+        notnest = np.where((~self.nest_ethogram(0))*(~self.nest_ethogram(1)))[0]
+
+        close_good = [i for i in range(self.dataset.shape[0]) if i in close and i in notnest]
+        close_good_onehot = close_good = [i in close and i in notnest for i in range(self.dataset.shape[0])]
+        return close_good_onehot
+
+    def relative_velocity(self,mouse):
+        ## First calculate velocity:
+        vel = self.velocity(mouse,5,3,False)
+        ## Now calculate relative position of other mouse:
+        rel = self.relative_vector(mouse)
+        ## calculate projection of velocity onto relative position:
+        # first calculate scalar projection:
+        print(vel.shape,rel.shape)
+        inner_prod = np.sum(np.multiply(vel[:self.dataset.shape[0]-1,:],rel[:self.dataset.shape[0],:]),axis = 1)
+        normed = inner_prod/np.linalg.norm(rel[:self.dataset.shape[0]-1,:],axis = 1)**2
+        projections = normed[:,np.newaxis]*rel[:self.dataset.shape[0]-1,:]
+        return projections
+
+    def relative_speed(self,mouse):
+        ## First calculate velocity:
+        vel = self.velocity(mouse,5,3,False)
+        ## Now calculate relative position of other mouse:
+        rel = self.relative_vector(mouse)
+        ## calculate projection of velocity onto relative position:
+        # first calculate scalar projection:
+        print(vel.shape,rel.shape)
+        inner_prod = np.sum(np.multiply(vel[:self.dataset.shape[0],:],rel[:self.dataset.shape[0]-1,:]),axis = 1)
+        normed = inner_prod/np.linalg.norm(rel[:self.dataset.shape[0]-1,:],axis = 1)
+
+        return normed
+
+    def relative_speed_normed(self,mouse):
+        ## First calculate velocity:
+        vel = self.velocity(mouse,5,3,False)
+        ## Now calculate relative position of other mouse:
+        rel = self.relative_vector(mouse)
+        ## calculate projection of velocity onto relative position:
+        # first calculate scalar projection:
+        print(vel.shape,rel.shape)
+        inner_prod = np.sum(np.multiply(vel[:self.dataset.shape[0]-1,:],rel[:self.dataset.shape[0]-1,:]),axis = 1)
+        normed = inner_prod/(np.linalg.norm(rel[:self.dataset.shape[0]-1,:],axis = 1)*np.linalg.norm(vel[:self.dataset.shape[0]-1,:],axis = 1))
+
+        return normed
 
     def interhead_position(self,mouse_id):
         # Returns positions between the head for a given mouse
@@ -432,6 +756,7 @@ class social_dataset(object):
             self.plot_trajectory([0,1,2,3,4,5,6,7,8,9],start = frame,end = frame+1,cropx = 300,cropy = 70,axes = ax,marker = 'o')
         plt.show()
 
+############################ Filtering Primitives
     def deviance_final(self,i,windowlength,reference,ref_pindex,target,target_pindex):
         ## We have to define all relevant index sets first. This is actually where most of the trickiness happens. We do the
         ## following: 1) define a starting point in the TARGET trajectory, by giving an index into the set of allowed axes.
@@ -462,145 +787,542 @@ class social_dataset(object):
         traj_ref_sample = traj_ref[[start_rel_ref-1,start_rel_ref,end_rel_ref,end_rel_ref+1],:]
 
         ## Create interpolation function:
-        f = interp1d(sample_indices_rel,traj_ref_sample,axis = 0)
+        f = interp1d(sample_indices_rel,traj_ref_sample,axis = 0,kind = 'cubic')
 
         ## Now evaluate this at the relevant points on the test function!
-
 
         interped_points = f(comp_indices_rel_test)
 
         sampled_points = traj_test[sample_indices_absolute[0]:sample_indices_absolute[-1],:]
         return interped_points,sampled_points,comp_indices_rel_test
 
-    def filter_check(self,pindex,windowlength,varthresh):
+    def deviance_final_p(self,i,windowlength,reference,ref_pindex,target,target_pindex):
+        ## We have to define all relevant index sets first. This is actually where most of the trickiness happens. We do the
+        ## following: 1) define a starting point in the TARGET trajectory, by giving an index into the set of allowed axes.
+        # First define the relevant indices for interpolation: return the i+1th and the windowlength+i+1th index in the test set:
+        sample_indices_absolute = [i+1,windowlength+i+1]
+        ref_indices = ref_pindex
 
-        sample_indices = lambda i: [i,i+1,windowlength+i+1,windowlength+i+2]
-        # Define the indices you want to check: acceptable indices in both the part trajectory for this animal and
-        # its reference counterpoint
-        mouse_nb = pindex/5
+        target_indices = target_pindex
 
-        all_vars = []
-        all_outs = []
+        test_indices_sample_start = target_indices[sample_indices_absolute[0]]
+        test_indices_sample_end = target_indices[sample_indices_absolute[-1]]
+
+        ## We have to find the appropriate indices in the reference trajectory: those equal to or just outside the test indices
+        start_rel_ref,end_rel_ref = np.where(ref_indices <= test_indices_sample_start)[0][-1],np.where(ref_indices >= test_indices_sample_end)[0][0]
+
+        sample_indices_rel = ref_indices[[start_rel_ref-1,start_rel_ref,end_rel_ref-1,end_rel_ref]]
+
+        ## Define the relevant indices for comparison in the test trajectory space:
+        comp_indices_rel_test = target_indices[sample_indices_absolute[0]:sample_indices_absolute[-1]]
 
 
-        target = self.render_trajectory_full(pindex)
-        target_indices = self.allowed_index_full[pindex]
 
-        compare_max = len(target_indices)-windowlength-2
-        for i in range(compare_max):
+        ## Now we should use indices to 1) interpolate the baseline trajectory, 2) evaluate the fit of the test to the
+        ## interpolation
+        traj_ref = reference
+        traj_test = target
 
-            current_vars = []
-            current_outs = []
-            for j in range(2):
-                interped,sampled,indices = self.deviance_final(i,windowlength,target,target_indices,target,target_indices)
-                linewise_var = np.max(np.max(abs(interped-sampled),axis = 0))
-                current_vars.append(linewise_var)
-                if linewise_var > varthresh:
-                    mis = np.where(abs(interped-sampled)>varthresh)[0]
-                    if not list(mis):
-                        pass
+        traj_ref_sample = traj_ref[[start_rel_ref-1,start_rel_ref,end_rel_ref,end_rel_ref+1],:]
+
+        ## Create interpolation function:
+        f = interp1d(sample_indices_rel,traj_ref_sample,axis = 0,kind = 'cubic')
+
+        ## Now evaluate this at the relevant points on the test function!
+
+        interped_points = f(comp_indices_rel_test)
+
+        sampled_points = traj_test[sample_indices_absolute[0]:sample_indices_absolute[-1],:]
+        return interped_points,sampled_points,comp_indices_rel_test
+
+
+    def adjacency_matrix(self,frames,vstats,mstats,thresh = [2,7]):
+        ## Iterate through the parts of each mouse pairwise, and
+        ## fetch the appropriate matrix with distances:
+        stats = [vstats,mstats]
+        matrix = np.zeros((len(frames),10,10))
+        for refmouse in range(2):
+            for j in range(5):
+                partref = refmouse*5+j
+                for targmouse in range(2):
+                    threshindex = targmouse == refmouse
+                    if threshindex == 0:
+                        idxvec = j+1
                     else:
-                        current_outs.append(indices[mis])
-                if not current_outs:
-                    pass
-                else:
-                    all_outs.append(current_outs)
-        return all_outs
-    # Cross check against the centroid of the other mouse:
-    def filter_crosscheck(self,pindex):
-        windowlength = 15
-        sample_indices = lambda i: [i,i+1,windowlength+i+1,windowlength+i+2]
-        # Define the indices you want to check: acceptable indices in both the part trajectory for this animal and
-        # its reference counterpoint
+                        idxvec = j
+                    for i in range(idxvec):
+                        parttarg = targmouse*5+i
+                        dist = self.part_dist(partref,parttarg)[frames]
+                        ## We want to ask if this is typical for what we would expect:
+                        stats_touse = stats[refmouse]
+                        if i == j:
+                            mean,std = 0,15
+                        else:
+                            mean,std = stats_touse[(partref,refmouse*5+i)]
+                        ## Logical entries:
+                        #threshold is generally stricter for your own animal:
+                        ## Query: is the target mouse part in line with what would be expected
+                        ## given the reference mouse's skeleton? I.e. asking if a body part
+                        ## fits better with the other skeleton is comparing columns of this
+                        ## block diagonal matrix
+                        matrix[:,partref,parttarg] = abs(dist-mean)< thresh[threshindex]*std
+                        matrix[:,partref-j+i,parttarg-i+j] = matrix[:,partref,parttarg]
+
+        return matrix
+
+    ## The input consists of two segment sets and the trajectory data:
+    ## Note that this will process the part in both mice symmetrically
+    ## (self.classify_v3(pindex) == self.classify_v3(other_pindex))
+    def classify_v3(self,pindex):
         mouse_nb = pindex/5
         other_mouse = abs(mouse_nb-1)
         other_pindex = int((other_mouse-mouse_nb)*5+pindex)
-        mice = [pindex,other_pindex]
-        all_vars = []
-        all_outs = []
+        pindices = [pindex,other_pindex]
+        # Find trajectories:
+        trajectories = self.render_trajectories(pindices)
+        length = len(trajectories[0])
+        # Find segments:
+        self_good_indices = self.allowed_index_full[pindex][:,0]
+        other_good_indices = self.allowed_index_full[other_pindex][:,0]
 
-        reference_centroid = self.render_trajectory_full(other_pindex)
-#         target_centroid = self.render_trajectory_full(mouse_nb*5+3)
-        target = self.render_trajectory_full(pindex)
+        ssegs = find_segments(self_good_indices)
+        osegs = find_segments(other_good_indices)
 
-        reference_centroid_indices = self.allowed_index_full[other_pindex]
-#         target_centroid_indices = self.allowed_index_full[mouse_nb*5+3]
-        target_indices = self.allowed_index_full[pindex]
+        ## Have a state variable for both animals that says if we are in a trajectory or not, and which we are in
+        segs = [ssegs,osegs]
 
-#         numerical_allowed_ref = [index for index in self.allowed_index_full[pindex][:,0] if index+14<len(reference)] ## we have to skim at the end
-        numerical_allowed_tar = [index for index in self.allowed_index_full[other_pindex][:,0] if index+14<len(target)] ## we have to skim at the end
-        ## Ugly: we need to make sure that we don't index past what we can compare to....
+        ssegind = 0
+        osegind = 0
+        seginds = np.array([ssegind,osegind])
+        sstart,send = ssegs[ssegind][0],ssegs[ssegind][-1]
+        ostart,oend = osegs[osegind][0],osegs[osegind][-1]
 
-#         compare_max = np.min([len(target_indices)-windowlength-1,len(reference_indices)-windowlength-1])
-        compare_max = np.min([len(target_indices)-windowlength-2,len(reference_centroid_indices)-windowlength-2])
+        starts = np.array([sstart,ostart])
+        ends = np.array([send,oend])
+        labels = ['virgin','dam']
 
-        for i in range(compare_max):
+        ## Initialize a shell array of nans:
+        shell_array = np.empty((self.dataset.shape[0],2))
+        shell_array[:] = np.nan
 
-            current_vars = []
-            current_outs = []
-            for j in range(2):
-                interped,sampled,indices = self.deviance_final(i,windowlength,target,target_indices,target,target_indices)
-                linewise_var = np.max(np.max(abs(interped-sampled),axis = 0))
-                current_vars.append(linewise_var)
-                if linewise_var > 20:
-#                     mis = np.where(abs(interped-sampled)>20)[0]
-                    # Cross check with the other trajectory:
-                    cross_interped,cross_sampled,indices = self.deviance_final(i,windowlength,reference_centroid,reference_centroid_indices,target,target_indices)
-                    # Now check where the points are closer to this cross trajectory than the current one:
-                    std_diff = np.linalg.norm(interped-sampled,axis = 1)
-                    cross_diff = np.linalg.norm(cross_interped-cross_sampled,axis = 1)
-                    # Look for points where the point is __significantly__ closer to the cross than the standard linearization:
-                    ratio = cross_diff/std_diff
-                    mis = np.where(ratio<0.5)[0]
-                    if not list(mis):
-                        pass
+        ## Initialize an array to keep track of when we're in the nest:
+        nest_array = np.zeros(self.dataset.shape[0],)
+
+        ## Keep track of last entry for both animals:
+        lastentries_hist = [[],[]]
+        for time in tqdm(range(length)):
+
+            ## until we exit the current interval, we track the start and end of the current interval:
+            timevec = np.repeat(time,2)
+            ## If we exit the segment:
+            if np.any(timevec == ends):
+
+                exits = np.where(timevec == ends)[0]
+
+                for exit_ind in exits:
+
+                    starts[exit_ind] = segs[exit_ind][seginds[exit_ind]][0]
+                    ends[exit_ind] = segs[exit_ind][seginds[exit_ind]][-1]
+
+            ## If we enter the next registered segment:
+            if np.any(timevec == starts):
+
+                enters = np.where(timevec == starts)[0]
+
+                for enter_ind in enters:
+                    ## Define a start and end for this trajectory:
+                    selfstart,selfend = segs[enter_ind][seginds[enter_ind]][0],segs[enter_ind][seginds[enter_ind]][-1]
+                    otherstart,otherend = segs[1-enter_ind][seginds[1-enter_ind]][0],segs[1-enter_ind][seginds[1-enter_ind]][-1]
+
+                    ## Grab the trajectory:
+                    segment = segment_getter(trajectories,segs,seginds[enter_ind],enter_ind)
+
+                    ## First compare to your own past:
+
+                    # Find difference with past trajectory:
+                    # Find last end:
+                    shell_column = shell_array[:,0+enter_ind:1+enter_ind]
+                    if np.all(np.isnan(shell_column)):
+                        last_entry = segment[0:1,:]
                     else:
-                        current_outs.append(indices[mis])
-                if not current_outs:
-                    pass
-                else:
-                    all_outs.append(current_outs)
-        return all_outs
+                        last_entry_inds = np.where(~np.isnan(shell_column[:,0]))[0][-1:]
+                        last_entry_val = shell_column[np.where(~np.isnan(shell_column[:,0]))[0][-1:]]
+                        ## Indexing trickery:
+                        ind_choice = [1-enter_ind,enter_ind]
+                        ## Current
+                        curr_pindex = pindices[enter_ind]
 
-    def filter_crosscheck_replace(self,pindex):
+                        last_entry = trajectories[ind_choice[curr_pindex == last_entry_val[0][0]]][last_entry_inds,:]
+                    lastentries_hist[enter_ind] = last_entry
+
+                    histselfdifference = np.linalg.norm(last_entry-segment[0,:])
+
+                    threshbound = 100
+
+
+                    if histselfdifference < threshbound:
+                        print('accept',time)
+                        ###################################################################
+
+                        shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+
+                        ###################################################################
+                    # If it doesnt fit with the past, compare to mirroring trajectory:
+                    else:
+                        ## find indices that overlap with mirroring trajectory:
+                        maxstart,minend = np.max(starts),np.min(ends)
+
+                        if minend-maxstart <=0:
+                            pass ## If other trajectory not valid at the time
+                            print('passed',time)
+                        else:
+                            self = trajectories[enter_ind][maxstart:minend,:]
+                            other = trajectories[1-enter_ind][maxstart:minend,:]
+
+                            # Find difference with other trajectory
+                            maxdifference = np.max(np.linalg.norm(self-other,axis = 1))
+                            histotherdifference = np.linalg.norm(last_entry-other[0,:])
+
+                            ## Three cases here:
+                            ## 1) Trajectory duplicates an already existing other trajectory:
+                            if histselfdifference > 3*maxdifference:
+                                print('ignore',time)
+                                pass ## We do not assign this segment to anyone, as it is already accounted for.
+                            ## 2) Trajectory has switched with the other trajectory:
+                            elif histselfdifference > 3*histotherdifference:
+                                print('switch',time)
+
+                                ###################################################################
+                                shell_array[maxstart:minend,0+enter_ind:1+enter_ind] = pindices[1-enter_ind]
+                                ## Additionally, if this trajectory is close to the other's ending point:
+                                shell_array[maxstart:minend,0+1-enter_ind:1+1-enter_ind] = pindices[enter_ind]
+                                ###################################################################
+                            ## 3) Everything is fine.
+                            else:
+                                print('keep',time)
+                                ## Measure backwards from the current segment:
+                                delay_interval = selfstart-last_entry_inds
+
+                                if delay_interval > 30:
+                                    ###################################################################
+                                    shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+                                    ###################################################################
+                                else:
+                                    pass
+                                    # plt.plot(np.arange(minend-maxstart)+maxstart,self,'ro',label = labels[enter_ind])
+                                    # plt.plot(np.arange(minend-maxstart)+maxstart,other,'bo',label = labels[1-enter_ind])
+                                    # plt.plot(np.ones((1,2))*maxstart,last_entry,'g*',markersize = 5)
+                                    # plt.legend()
+                                    # plt.show()
+
+                ## We only want this to update if we're not at the last trajectory:
+                    if seginds[enter_ind]!= len(segs[enter_ind])-1:
+                        seginds[enter_ind] += 1
+    #         if time == length -1:
+
+
+    #             fig,ax = plt.subplots(2,1)
+    #             ax[0].plot(shell_array[:,0:1],label = 'virginx')
+    #             ax[0].plot(shell_array[:,2:3],label = 'damx')
+    #             ax[1].plot(shell_array[:,1:2],label = 'virginy')
+    #             ax[1].plot(shell_array[:,3:4],label = 'damy')
+    #             ax[0].legend()
+    #             ax[1].legend()
+    #             plt.show()
+
+        return shell_array
+
+    def classify_v4(self,pindex):
+        threshbound = 100
         mouse_nb = pindex/5
         other_mouse = abs(mouse_nb-1)
         other_pindex = int((other_mouse-mouse_nb)*5+pindex)
-        outs = self.filter_crosscheck(pindex)
-        outs_processed = ([element for out in outs for element in out])
-        if not outs_processed:
-            pass
-        else:
-            outs_processed = np.unique(np.concatenate(outs_processed))
+        pindices = [pindex,other_pindex]
+        # Find trajectories:
+        trajectories = self.render_trajectories(pindices)
+        length = len(trajectories[0])
+        # Find segments:
+        self_good_indices = self.allowed_index_full[pindex][:,0]
+        other_good_indices = self.allowed_index_full[other_pindex][:,0]
 
-        okay_indices = np.array([index for index in self.allowed_index_full[pindex] if index[0] not in outs_processed])
-        self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
-#         invouts = self.filter_crosscheck(other_pindex))
-#         print(out.intersection(invouts))
-#         print(set(outs).intersection(set(invouts)),"printing")
-    def filter_crosscheck_replaces(self,indices):
-        for pindex in indices:
-            print('crosschecking '+ str(self.part_dict[pindex]))
-            self.filter_crosscheck_replace(pindex)
+        ssegs = find_segments(self_good_indices)
+        osegs = find_segments(other_good_indices)
 
-    def filter_check_replace(self,pindex,windowlength= 30,varthresh=30):
+        ## Have a state variable for both animals that says if we are in a trajectory or not, and which we are in
+        segs = [ssegs,osegs]
+
+        ssegind = 0
+        osegind = 0
+        seginds = np.array([ssegind,osegind])
+        sstart,send = ssegs[ssegind][0],ssegs[ssegind][-1]
+        ostart,oend = osegs[osegind][0],osegs[osegind][-1]
+
+        starts = np.array([sstart,ostart])
+        ends = np.array([send,oend])
+        labels = ['virgin','dam']
+
+        ## Initialize a shell array of nans:
+        shell_array = np.empty((self.dataset.shape[0],2))
+        shell_array[:] = np.nan
+
+        ## Initialize an array to keep track of when we're in the nest:
+        nest_array = np.zeros(self.dataset.shape[0],)
+
+        ## Keep track of last entry for both animals:
+        lastentries_hist = [[],[]]
+        for time in tqdm(range(length)):
+
+            ## until we exit the current interval, we track the start and end of the current interval:
+            timevec = np.repeat(time,2)
+            ## If we exit the segment:
+            if np.any(timevec == ends):
+
+                exits = np.where(timevec == ends)[0]
+
+                for exit_ind in exits:
+
+                    starts[exit_ind] = segs[exit_ind][seginds[exit_ind]][0]
+                    ends[exit_ind] = segs[exit_ind][seginds[exit_ind]][-1]
+
+            ## If we enter the next registered segment:
+            if np.any(timevec == starts):
+
+                enters = np.where(timevec == starts)[0]
+
+                for enter_ind in enters:
+                    ## Define a start and end for this trajectory:
+                    selfstart,selfend = segs[enter_ind][seginds[enter_ind]][0],segs[enter_ind][seginds[enter_ind]][-1]
+                    otherstart,otherend = segs[1-enter_ind][seginds[1-enter_ind]][0],segs[1-enter_ind][seginds[1-enter_ind]][-1]
+
+                    ## Grab the trajectory:
+                    segment = segment_getter(trajectories,segs,seginds[enter_ind],enter_ind)
+
+                    ## First compare to your own past:
+
+                    # Find difference with past trajectory:
+                    # Find last end:
+                    shell_column = shell_array[:,0+enter_ind:1+enter_ind]
+                    if np.all(np.isnan(shell_column)):
+                        last_entry = segment[0:1,:]
+                    else:
+                        last_entry_inds = np.where(~np.isnan(shell_column[:,0]))[0][-1:]
+                        last_entry_val = shell_column[np.where(~np.isnan(shell_column[:,0]))[0][-1:]]
+                        ## Indexing trickery:
+                        ind_choice = [1-enter_ind,enter_ind]
+                        ## Current
+                        curr_pindex = pindices[enter_ind]
+
+                        last_entry = trajectories[ind_choice[curr_pindex == last_entry_val[0][0]]][last_entry_inds,:]
+                    lastentries_hist[enter_ind] = last_entry
+
+                    histselfdifference = np.linalg.norm(last_entry-segment[0,:])
+
+                    if histselfdifference < threshbound:
+
+                        ###################################################################
+
+                        shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+
+                        ###################################################################
+                    # If it doesnt fit with the past, compare to mirroring trajectory:
+                    else:
+
+                        ## find indices that overlap with mirroring trajectory:
+                        maxstart,minend = np.max(starts),np.min(ends)
+
+                        if minend-maxstart <=0:
+                            pass ## If other trajectory not valid at the time
+
+                        else:
+                            self = trajectories[enter_ind][maxstart:minend,:]
+                            other = trajectories[1-enter_ind][maxstart:minend,:]
+
+                            # Find difference with other trajectory
+                            maxdifference = np.max(np.linalg.norm(self-other,axis = 1))
+                            histotherdifference = np.linalg.norm(last_entry-other[0,:])
+                            histcrossdifference = np.linalg.norm(lastentries_hist[1-enter_ind] - other[0,:])
+                            ## Three cases here:
+                            ## 1) Trajectory duplicates an already existing other trajectory:
+                            if histselfdifference > 3*maxdifference:
+
+                                pass ## We do not assign this segment to anyone, as it is already accounted for.
+                            ## 2) Trajectory has switched with the other trajectory:
+                            elif histselfdifference > 3*histotherdifference:
+
+                                if histcrossdifference > threshbound:
+
+                                    ###################################################################
+                                    shell_array[maxstart:minend,0+enter_ind:1+enter_ind] = pindices[1-enter_ind]
+                                    ## Additionally, if this trajectory is close to the other's ending point:
+                                    shell_array[maxstart:minend,0+1-enter_ind:1+1-enter_ind] = pindices[enter_ind]
+                                    ###################################################################
+                                else:
+                                    delay_interval = selfstart-last_entry_inds
+                                    if delay_interval > 20:
+                                        ###################################################################
+                                        shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+                                        ###################################################################
+                                    else:
+                                        pass
+                            ## 3) Everything is fine.
+                            else:
+
+                                ## Measure backwards from the current segment:
+                                delay_interval = selfstart-last_entry_inds
+
+                                if delay_interval > 30:
+                                    ###################################################################
+                                    shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+                                    ###################################################################
+                                else:
+                                    pass
+                                    # plt.plot(np.arange(minend-maxstart)+maxstart,self,'ro',label = labels[enter_ind])
+                                    # plt.plot(np.arange(minend-maxstart)+maxstart,other,'bo',label = labels[1-enter_ind])
+                                    # plt.plot(np.ones((1,2))*maxstart,last_entry,'g*',markersize = 5)
+                                    # plt.legend()
+                                    # plt.show()
+
+                ## We only want this to update if we're not at the last trajectory:
+                    if seginds[enter_ind]!= len(segs[enter_ind])-1:
+                        seginds[enter_ind] += 1
+    #         if time == length -1:
+
+
+    #             fig,ax = plt.subplots(2,1)
+    #             ax[0].plot(shell_array[:,0:1],label = 'virginx')
+    #             ax[0].plot(shell_array[:,2:3],label = 'damx')
+    #             ax[1].plot(shell_array[:,1:2],label = 'virginy')
+    #             ax[1].plot(shell_array[:,3:4],label = 'damy')
+    #             ax[0].legend()
+    #             ax[1].legend()
+    #             plt.show()
+
+        return shell_array
+
+    def refine(self,out_array,pindex):
+
         mouse_nb = pindex/5
-        outs = self.filter_check(pindex,windowlength,varthresh)
-        outs_processed = ([element for out in outs for element in out])
-        if not outs_processed:
-            pass
-        else:
-            outs_processed = np.unique(np.concatenate(outs_processed))
-        print(outs_processed)
-        okay_indices = np.array([index for index in self.allowed_index_full[pindex] if index[0] not in outs_processed])
-        self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
+        other_mouse = abs(mouse_nb-1)
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
+        pindices = [pindex,other_pindex]
+        # Find trajectories:
+        trajectories = [self.select_trajectory(pind) for pind in pindices]
+        v_conf = trajectories[0][np.isnan(out_array[:,0:1])[:,0],:]
+        m_conf = trajectories[1][np.isnan(out_array[:,1:2])[:,0],:]
+        # Make interpolating functions from them:
+        vinterp,minterp = interpolate_isnans(trajectories,out_array)
 
-    def filter_check_replaces(self,indices):
-        for pindex in indices:
-            print('checking '+ str(self.part_dict[pindex]))
-            self.filter_check_replace(pindex)
+        # Initialize a new output array for just the residual values with nans
+        shell_array_2 = np.empty((self.dataset.shape[0],4))
+        shell_array_2[:] = np.nan
 
-    def filter_check_v2(self,pindex,windowlength,varthresh):
+        shell_array_2[np.isnan(out_array[:,0:1])[:,0],:2] = v_conf
+        shell_array_2[np.isnan(out_array[:,1:2])[:,0],2:] = m_conf
+
+        residualsmm = minterp(np.arange(self.dataset.shape[0]))-shell_array_2[:,2:]
+        residualsvv = vinterp(np.arange(self.dataset.shape[0]))-shell_array_2[:,:2]
+        residualsmv = minterp(np.arange(self.dataset.shape[0]))-shell_array_2[:,:2]
+        residualsvm = vinterp(np.arange(self.dataset.shape[0]))-shell_array_2[:,2:]
+
+        mm_redeemed = np.where(np.linalg.norm(residualsmm,axis = 1)<3)[0]
+        mv_redeemed = np.where(np.linalg.norm(residualsmv,axis = 1)<3)[0]
+        vv_redeemed = np.where(np.linalg.norm(residualsvv,axis = 1)<3)[0]
+        vm_redeemed = np.where(np.linalg.norm(residualsvm,axis = 1)<3)[0]
+
+        # out_array[vm_redeemed,:1] = pindices[-1]
+        # out_array[vv_redeemed,:1] = pindices[0]
+        # out_array[mv_redeemed,1:] = pindices[0]
+        # out_array[mm_redeemed,1:] = pindices[-1]
+        # plt.plot(residualsmm)
+        # plt.show()
+        # plt.plot(residualsvv)
+        # plt.show()
+        return out_array
+#############################################################
+
+## Define a function to analyze the adjacency matrix by its individual blocks, and decide if
+## an entry is misassigned:
+    def filter_crosscheck_v2(self,vstats,mstats,thresh = [2,2],indices = None):
+        if indices is None:
+            indices = self.time_index
+        ## We analyze all entries in parallel:
+        all_matrices = self.adjacency_matrix(indices,vstats,mstats,thresh)
+        vself = all_matrices[:,:5,:5]
+        mconf = all_matrices[:,:5,5:]
+        mself = all_matrices[:,5:,5:]
+        vconf = all_matrices[:,5:,:5]
+
+        v_confidence = np.sum(vself,axis = 1)
+        v_cross = np.sum(vconf,axis = 1)
+        m_confidence = np.sum(mself,axis = 1)
+        m_cross = np.sum(mconf,axis = 1)
+
+        vconfusion = v_confidence-v_cross
+        mconfusion = m_confidence-m_cross
+
+
+
+        confusion = np.concatenate((vconfusion,mconfusion),axis = -1)
+
+        return confusion
+
+## Less harsh of a threshold: If you are close to the body part of the other animal,
+## and your body parts cant intercede for you, you are removed.
+    def filter_crosscheck_v3(self,vstats,mstats,thresh = [2,2],indices = None):
+        if indices is None:
+            indices = self.time_index
+        ## We analyze all entries in parallel:
+        all_matrices = self.adjacency_matrix(indices,vstats,mstats,thresh)
+        ## Look for diagonals of the off-diagonal blocks
+        vself = all_matrices[:,:5,:5]
+        mconf = all_matrices[:,:5,5:]
+        mself = all_matrices[:,5:,5:]
+        vconf = all_matrices[:,5:,:5]
+
+        v_confidence = np.sum(vself,axis = 1)
+        v_cross = np.diagonal(vconf,axis1 = 1,axis2 = 2)
+        m_confidence = np.sum(mself,axis = 1)
+        m_cross = np.diagonal(mconf,axis1 = 1,axis2 = 2)
+
+        # Normalize to how tight we want this threshold to be:
+        vconfusion = v_confidence-2*v_cross
+        mconfusion = m_confidence-2*m_cross
+
+
+
+        confusion = np.concatenate((vconfusion,mconfusion),axis = -1)
+
+        return confusion
+
+
+    def filter_crosscheck_replaces_v2(self,parts,vstats,mstats,thresh = [2,7],indices = None):
+        if indices is None:
+            indices = self.time_index
+        confusion = self.filter_crosscheck_v2(vstats,mstats,thresh,indices)
+
+        for p,part in enumerate(parts):
+            pconfusion = indices[np.where(confusion[:,part] <0)[0]]
+
+            ind_before = self.allowed_index_full[part]
+
+            okay_indices = np.array([index for index in self.allowed_index_full[part] if index[0] not in pconfusion])
+            self.allowed_index_full[part] = okay_indices
+
+    def filter_crosscheck_replaces_v3(self,parts,vstats,mstats,thresh = [2,2],indices = None):
+        if indices is None:
+            indices = self.time_index
+        confusion = self.filter_crosscheck_v3(vstats,mstats,thresh,indices)
+
+        for p,part in enumerate(parts):
+            print(np.where(confusion[:,part]<0)[0])
+            pconfusion = indices[np.where(confusion[:,part] <= 0)[0]]
+
+            ind_before = self.allowed_index_full[part]
+
+            okay_indices = np.array([index for index in self.allowed_index_full[part] if index[0] not in pconfusion])
+            self.allowed_index_full[part] = okay_indices
+
+    def filter_check_v2(self,pindex,windowlength,varthresh,skip):
 
         sample_indices = lambda i: [i,i+1,windowlength+i+1,windowlength+i+2]
         # Define the indices you want to check: acceptable indices in both the part trajectory for this animal and
@@ -616,7 +1338,7 @@ class social_dataset(object):
         scores = np.zeros(len(target))
 
         compare_max = len(target_indices)-windowlength-2
-        for i in tqdm(range(compare_max)):
+        for i in tqdm(range(compare_max)[::skip]):
 
             current_vars = []
             current_outs = []
@@ -630,10 +1352,64 @@ class social_dataset(object):
                 mis = np.ones(np.shape(interped)[0])
             scores[i+1:i+windowlength+1] += mis
         return scores
+## Parallelized version of the above. Could be up to 10x faster.
+    def filter_check_p(self,pindices,windowlength,varthresh,skip):
 
-    def filter_check_replace_v2(self,pindex,windowlength= 45,varthresh=40):
+        sample_indices = lambda i: [i,i+1,windowlength+i+1,windowlength+i+2]
+        # Define the indices you want to check: acceptable indices in both the part trajectory for this animal and
+        # its reference counterpoint
+
+        all_vars = []
+        all_outs = []
+
+        target = np.concatenate(self.render_trajectories(pindices),axis = 1)
+        ## Make sure that no other processing has been done:
+        for pindex in pindices:
+            assert len(self.allowed_index_full[pindex]) == len(self.dataset.values), 'Must be done first'
+        target_indices = self.time_index
+
+        scores = np.zeros((len(target),len(pindices)))
+
+        compare_max = len(target_indices)-windowlength-2
+        for i in tqdm(range(compare_max)[::skip]):
+
+            current_vars = []
+            current_outs = []
+
+            interped,sampled,indices = self.deviance_final_p(i,windowlength,target,target_indices,target,target_indices)
+            linewise_vars = np.array([np.max(np.max(abs(interped-sampled),axis = 0)[2*column:2*(column+1)]) for column in range(len(pindices))])
+
+            ## Where do we violate that constraint?
+
+            for column,linewise_var in enumerate(linewise_vars):
+                if linewise_var > varthresh:
+                    mis = -1*(np.max((abs(interped[:,2*column:2*(column+1)]-sampled[:,2*column:2*(column+1)])>varthresh),axis = 1)*2-1)
+                else:
+                    mis = np.ones(np.shape(interped)[0])
+                scores[i+1:i+windowlength+1,column] += mis
+        return scores
+
+
+    def filter_check_replace_p(self,pindices,windowlength = 45,varthresh = 40,skip = 1):
+        preouts = self.filter_check_p(pindices,windowlength,varthresh,skip)
+        for pindind,pindex in enumerate(pindices):
+            if not np.all(self.filter_check_counts[pindex] == preouts[:,pindind]):
+                self.filter_check_counts[pindex] = preouts[:,pindind]
+            outs = np.where(preouts[:,pindind]<0)[0]
+            if not len(outs):
+                pass
+            else:
+                outs = np.unique(outs)
+            okay_indices = np.array([index for index in self.allowed_index_full[pindex] if index[0] not in outs])
+            self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
+
+
+    def filter_check_replace_v2(self,pindex,windowlength= 45,varthresh=40,skip=1):
         mouse_nb = pindex/5
-        preouts = self.filter_check_v2(pindex,windowlength,varthresh)
+        preouts = self.filter_check_v2(pindex,windowlength,varthresh,skip)
+        ## Update in memory if not the same
+        if not np.all(self.filter_check_counts[pindex] == preouts):
+            self.filter_check_counts[pindex] = preouts
         outs = np.where(preouts<0)[0]
         if not len(outs):
             pass
@@ -642,10 +1418,445 @@ class social_dataset(object):
         okay_indices = np.array([index for index in self.allowed_index_full[pindex] if index[0] not in outs])
         self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
 
-    def filter_check_replaces_v2(self,indices,windowlength= 45,varthresh=40):
+    def filter_check_replaces_v2(self,indices,windowlength= 45,varthresh=40,skip = 1):
         for pindex in indices:
             print('checking '+ str(self.part_dict[pindex]))
-            self.filter_check_replace_v2(pindex,windowlength= 45,varthresh=40)
+            self.filter_check_replace_v2(pindex,windowlength= windowlength,varthresh=varthresh,skip=skip)
+
+    def filter_segment_noresids(self,pindex):
+        mouse_nb = pindex/5
+        other_mouse = abs(mouse_nb-1)
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
+        indices = [pindex,other_pindex]
+        out = self.classify_v3(pindex)
+        # print(sad)
+        for i in range(2):
+            col = out[:,i]
+            good = np.where(~np.isnan(col))[0][:,None]
+            col[good]
+            good_inds = np.concatenate((good,col[good]),axis = 1).astype(int)
+            self.allowed_index_full[indices[i]] = good_inds
+
+    def filter_segment(self,pindex):
+        mouse_nb = pindex/5
+        other_mouse = abs(mouse_nb-1)
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
+        indices = [pindex,other_pindex]
+        preout = self.classify_v3(pindex)
+        out = self.refine(preout,pindex)
+        for i in range(2):
+            col = out[:,i]
+            good = np.where(~np.isnan(col))[0][:,None]
+            col[good]
+            good_inds = np.concatenate((good,col[good]),axis = 1).astype(int)
+            self.allowed_index_full[indices[i]] = good_inds
+
+
+    def filter_segment_v2(self,pindex):
+        mouse_nb = pindex/5
+        other_mouse = abs(mouse_nb-1)
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
+        indices = [pindex,other_pindex]
+        preout = self.classify_v4(pindex)
+        out = self.refine(preout,pindex)
+        for i in range(2):
+            col = out[:,i]
+            good = np.where(~np.isnan(col))[0][:,None]
+            col[good]
+            good_inds = np.concatenate((good,col[good]),axis = 1).astype(int)
+            self.allowed_index_full[indices[i]] = good_inds
+
+    def filter_segment_replaces(self,indices):
+        assert len(indices)<= 5, 'symmetric in mice, dont rerun'
+        for index in indices:
+            self.filter_segment(index)
+
+    def filter_segment_replaces_v2(self,indices):
+        assert len(indices)<= 5, 'symmetric in mice, dont rerun'
+        for index in indices:
+            self.filter_segment_v2(index)
+
+    def filter_classify(self,pindex):
+        mouse_nb = pindex/5
+        other_mouse = abs(mouse_nb-1)
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
+        indices = [pindex,other_pindex]
+        preout = self.classify_v4(pindex)
+        out = self.refine(preout,pindex)
+        for i in range(2):
+            col = out[:,i]
+            good = np.where(~np.isnan(col))[0][:,None]
+            col[good]
+            good_inds = np.concatenate((good,col[good]),axis = 1).astype(int)
+            self.allowed_index_full[indices[i]] = good_inds
+
+    def filter_classify_replaces(self,indices):
+        assert len(indices)<= 5, 'symmetric in mice, dont rerun'
+        for index in indices:
+            self.filter_classify(index)
+
+
+### FUNCTIONS FOR PARAMETER SEARCH ON CLASSIFY:
+    def filter_classify_replaces_ps(self,indices,params):
+        assert len(indices)<= 5, 'symmetric in mice, dont rerun'
+        for index in indices:
+            self.filter_classify_ps(index,params)
+
+    def filter_classify_ps(self,pindex,params):
+        mouse_nb = pindex/5
+        other_mouse = abs(mouse_nb-1)
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
+        indices = [pindex,other_pindex]
+        preout = self.classify_v4_ps(pindex,params)
+        out = self.refine(preout,pindex)
+        for i in range(2):
+            col = out[:,i]
+            good = np.where(~np.isnan(col))[0][:,None]
+            col[good]
+            good_inds = np.concatenate((good,col[good]),axis = 1).astype(int)
+            self.allowed_index_full[indices[i]] = good_inds
+
+    def classify_v4_ps(self,pindex,params):
+
+        threshbound = 100+np.exp(params[0])
+        T0 = params[1]
+        T1 = params[2]
+        T2 = params[3]
+        T3 = params[4]
+
+
+        mouse_nb = pindex/5
+        other_mouse = abs(mouse_nb-1)
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
+        pindices = [pindex,other_pindex]
+        # Find trajectories:
+        trajectories = self.render_trajectories(pindices)
+        length = len(trajectories[0])
+        # Find segments:
+        self_good_indices = self.allowed_index_full[pindex][:,0]
+        other_good_indices = self.allowed_index_full[other_pindex][:,0]
+
+        ssegs = find_segments(self_good_indices)
+        osegs = find_segments(other_good_indices)
+
+        ## Have a state variable for both animals that says if we are in a trajectory or not, and which we are in
+        segs = [ssegs,osegs]
+
+        ssegind = 0
+        osegind = 0
+        seginds = np.array([ssegind,osegind])
+        sstart,send = ssegs[ssegind][0],ssegs[ssegind][-1]
+        ostart,oend = osegs[osegind][0],osegs[osegind][-1]
+
+        starts = np.array([sstart,ostart])
+        ends = np.array([send,oend])
+        labels = ['virgin','dam']
+
+        ## Initialize a shell array of nans:
+        shell_array = np.empty((self.dataset.shape[0],2))
+        shell_array[:] = np.nan
+
+        ## Initialize an array to keep track of when we're in the nest:
+        nest_array = np.zeros(self.dataset.shape[0],)
+
+        ## Keep track of last entry for both animals:
+        lastentries_hist = [[],[]]
+        for time in tqdm(range(length)):
+
+            ## until we exit the current interval, we track the start and end of the current interval:
+            timevec = np.repeat(time,2)
+            ## If we exit the segment:
+            if np.any(timevec == ends):
+
+                exits = np.where(timevec == ends)[0]
+
+                for exit_ind in exits:
+
+                    starts[exit_ind] = segs[exit_ind][seginds[exit_ind]][0]
+                    ends[exit_ind] = segs[exit_ind][seginds[exit_ind]][-1]
+
+            ## If we enter the next registered segment:
+            if np.any(timevec == starts):
+
+                enters = np.where(timevec == starts)[0]
+
+                for enter_ind in enters:
+                    ## Define a start and end for this trajectory:
+                    selfstart,selfend = segs[enter_ind][seginds[enter_ind]][0],segs[enter_ind][seginds[enter_ind]][-1]
+                    otherstart,otherend = segs[1-enter_ind][seginds[1-enter_ind]][0],segs[1-enter_ind][seginds[1-enter_ind]][-1]
+
+                    ## Grab the trajectory:
+                    segment = segment_getter(trajectories,segs,seginds[enter_ind],enter_ind)
+
+                    ## First compare to your own past:
+
+                    # Find difference with past trajectory:
+                    # Find last end:
+                    shell_column = shell_array[:,0+enter_ind:1+enter_ind]
+                    if np.all(np.isnan(shell_column)):
+                        last_entry = segment[0:1,:]
+                    else:
+                        last_entry_inds = np.where(~np.isnan(shell_column[:,0]))[0][-1:]
+                        last_entry_val = shell_column[np.where(~np.isnan(shell_column[:,0]))[0][-1:]]
+                        ## Indexing trickery:
+                        ind_choice = [1-enter_ind,enter_ind]
+                        ## Current
+                        curr_pindex = pindices[enter_ind]
+
+                        last_entry = trajectories[ind_choice[curr_pindex == last_entry_val[0][0]]][last_entry_inds,:]
+                    lastentries_hist[enter_ind] = last_entry
+
+                    histselfdifference = np.linalg.norm(last_entry-segment[0,:])
+
+                    if histselfdifference < threshbound:
+
+                        ###################################################################
+
+                        shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+
+                        ###################################################################
+                    # If it doesnt fit with the past, compare to mirroring trajectory:
+                    else:
+
+                        ## find indices that overlap with mirroring trajectory:
+                        maxstart,minend = np.max(starts),np.min(ends)
+
+                        if minend-maxstart <=0:
+                            pass ## If other trajectory not valid at the time
+
+                        else:
+                            self = trajectories[enter_ind][maxstart:minend,:]
+                            other = trajectories[1-enter_ind][maxstart:minend,:]
+
+                            # Find difference with other trajectory
+                            maxdifference = np.max(np.linalg.norm(self-other,axis = 1))
+                            histotherdifference = np.linalg.norm(last_entry-other[0,:])
+                            histcrossdifference = np.linalg.norm(lastentries_hist[1-enter_ind] - other[0,:])
+                            ## Three cases here:
+                            ## 1) Trajectory duplicates an already existing other trajectory:
+                            if histselfdifference > T0*maxdifference:
+
+                                pass ## We do not assign this segment to anyone, as it is already accounted for.
+                            ## 2) Trajectory has switched with the other trajectory:
+                            elif histselfdifference > T1*histotherdifference:
+
+                                if histcrossdifference > threshbound:
+
+                                    ###################################################################
+                                    shell_array[maxstart:minend,0+enter_ind:1+enter_ind] = pindices[1-enter_ind]
+                                    ## Additionally, if this trajectory is close to the other's ending point:
+                                    shell_array[maxstart:minend,0+1-enter_ind:1+1-enter_ind] = pindices[enter_ind]
+                                    ###################################################################
+                                else:
+                                    delay_interval = selfstart-last_entry_inds
+                                    if delay_interval > T2:
+                                        ###################################################################
+                                        shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+                                        ###################################################################
+                                    else:
+                                        pass
+                            ## 3) Everything is fine.
+                            else:
+
+                                ## Measure backwards from the current segment:
+                                delay_interval = selfstart-last_entry_inds
+
+                                if delay_interval > T3:
+                                    ###################################################################
+                                    shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+                                    ###################################################################
+                                else:
+                                    pass
+                                    # plt.plot(np.arange(minend-maxstart)+maxstart,self,'ro',label = labels[enter_ind])
+                                    # plt.plot(np.arange(minend-maxstart)+maxstart,other,'bo',label = labels[1-enter_ind])
+                                    # plt.plot(np.ones((1,2))*maxstart,last_entry,'g*',markersize = 5)
+                                    # plt.legend()
+                                    # plt.show()
+
+                ## We only want this to update if we're not at the last trajectory:
+                    if seginds[enter_ind]!= len(segs[enter_ind])-1:
+                        seginds[enter_ind] += 1
+    #         if time == length -1:
+
+
+    #             fig,ax = plt.subplots(2,1)
+    #             ax[0].plot(shell_array[:,0:1],label = 'virginx')
+    #             ax[0].plot(shell_array[:,2:3],label = 'damx')
+    #             ax[1].plot(shell_array[:,1:2],label = 'virginy')
+    #             ax[1].plot(shell_array[:,3:4],label = 'damy')
+    #             ax[0].legend()
+    #             ax[1].legend()
+    #             plt.show()
+
+        return shell_array
+
+
+################################ Filter visualization functions:
+    ## Show what the filters are working with:
+    def filter_check_parttrace(self,pindex,start,end,windowlength=45,varthresh=40):
+        mouse_nb = pindex/5
+        other_mouse = abs(mouse_nb-1)
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
+        t,r = self.render_trajectories([pindex,other_pindex])
+        # Save some time by loading this quantity in from memory:
+        if not len(self.filter_check_counts[pindex]):
+            trace = self.filter_check_v2(pindex,windowlength,varthresh)
+            self.filter_check_counts[pindex] = trace
+        else:
+            trace = self.filter_check_counts[pindex]
+        t_cropped = t[start:end,:]
+        r_cropped = r[start:end,:]
+        trace_cropped = trace[start:end]
+        fig,ax = plt.subplots(3,1,sharex = True)
+        ax[0].plot(t_cropped)
+        ax[0].set_title('Target')
+        ax[1].plot(trace_cropped)
+        ax[1].set_title('Score')
+        ax[2].plot(r_cropped)
+        ax[2].set_title('Cross')
+        plt.show()
+
+    def filter_crosscheck_parttrace(self,pindex,start,end,vstats,mstats,thresh=[5,2]):
+        mouse_nb = pindex/5
+        other_mouse = abs(mouse_nb-1)
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
+        t,r = self.render_trajectories([pindex,other_pindex])
+        fulltrace = self.filter_crosscheck_v2(vstats,mstats,thresh)
+        trace = fulltrace[:,pindex]
+        t_cropped = t[start:end,:]
+        r_cropped = r[start:end,:]
+        trace_cropped = trace[start:end]
+        fig,ax = plt.subplots(3,1,sharex = True)
+        ax[0].plot(t_cropped)
+        ax[0].set_title('Target')
+        ax[1].plot(trace_cropped)
+        ax[1].set_title('Score')
+        ax[2].plot(r_cropped)
+        ax[2].set_title('Cross')
+        plt.show()
+
+    def filter_check_image(self,frame,pindex,windowlength,varthresh):
+        all_parts = [i for i in range(10)]
+        fig = plt.figure(figsize=(10,10))
+
+        ax0 = plt.subplot2grid((3, 3), (0, 0))
+        ax1 = plt.subplot2grid((3, 3), (0, 1))
+        ax2 = plt.subplot2grid((3, 3), (0, 2))
+        ax3 = plt.subplot2grid((3, 3), (1, 0), colspan=3)
+
+        img_axes = [ax0,ax1,ax2]
+        frameoffset = [-1,0,1]
+        for i,imax in enumerate(img_axes):
+            self.plot_image_compare([pindex],frame+frameoffset[i],figureparams = (fig,imax))
+        if not len(self.filter_check_counts[pindex]):
+            trace = self.filter_check_v2(pindex,windowlength,varthresh)
+            self.filter_check_counts[pindex] = trace
+        else:
+            trace = self.filter_check_counts[pindex]
+
+        ## derive the point the window should start at:
+        fstart = frame - windowlength/2
+        target = self.render_trajectory_full(pindex)
+        target_indices = self.allowed_index_full[pindex]
+        fpoints,spoints,indices = self.deviance_final(fstart,windowlength,target,target_indices,target,target_indices)
+
+        ax1.plot(spoints[:,0],spoints[:,1],'bo',markersize = 1)
+        ax1.plot(fpoints[:,0],fpoints[:,1],color = 'blue')
+        ax3.plot(trace[frame-50:frame+50])
+        ax3.axvline(51,color = 'black')
+        ax1.set_title('Local Parameters')
+        plt.show()
+
+    def filter_crosscheck_image(self,frame,part,vstats,mstats,thresh):
+        all_parts = [i for i in range(10)]
+        fig = plt.figure(figsize=(10,10))
+
+        ax0 = plt.subplot2grid((3, 3), (0, 0))
+        ax1 = plt.subplot2grid((3, 3), (0, 1))
+        ax2 = plt.subplot2grid((3, 3), (0, 2))
+        ax3 = plt.subplot2grid((3, 3), (1, 0), colspan=3)
+
+        img_axes = [ax0,ax1,ax2]
+        frameoffset = [-1,0,1]
+        for i,imax in enumerate(img_axes):
+            self.plot_image_compare(all_parts,frame+frameoffset[i],figureparams = (fig,imax))
+        all_traces = self.filter_crosscheck_v2(vstats,mstats,thresh = thresh)
+        ax3.plot(all_traces[frame-50:frame+50,part])
+        ax3.axvline(51,color = 'black')
+        ax1.set_title('Local Parameters')
+        plt.show()
+
+################################
+    def robust_intervals(self,indices,structure):
+        buffered = binary_dilation(indices,structure)
+
+        ## Now find intervals of uninterestingness:
+        diff = np.diff(buffered.astype(int))
+        intervals = []
+        intend = None
+        intstart = None
+        for i in range(len(diff))[::-1]:
+            value = diff[i]
+
+            if value == -1:
+                intend = i
+            elif value == 1:
+                ## Account for corner case
+                if intend is not None:
+                    intstart = i
+                else:
+                    intstart = i
+                    intend = len(diff)
+            if i == 0 and intend is not None:
+                intstart = 0
+            if intend is not None and intstart is not None:
+                interval = [intstart,intend]
+                intervals.append(interval)
+                intend = None
+                intstart = None
+        return intervals
+
+### Visualization functions (I know there are more up there that I should move down.)
+## This function takes as input a one-hot vector that determines points of
+## interest in the video. a buffer on each end can also help make this more visually
+## pleasing.
+    def highlights_reel(self,name,indices,buffer = 5):
+        ## First buffer the index vector:
+        structure = np.ones(buffer*2+1,)
+        buffered = binary_dilation(indices,structure)
+        uninteresting = ~buffered
+        ## Now find intervals of uninterestingness:
+        diff = np.diff(uninteresting.astype(int))
+        intervals = []
+        intend = None
+        intstart = None
+        for i in range(len(diff))[::-1]:
+            value = diff[i]
+
+            if value == -1:
+                intend = i
+            elif value == 1:
+                ## Account for corner case
+                if intend is not None:
+                    intstart = i
+                else:
+                    intstart = i
+                    intend = len(diff)
+            if i == 0 and intend is not None:
+                intstart = 0
+            if intend is not None and intstart is not None:
+                interval = [intstart,intend]
+                intervals.append(interval)
+                intend = None
+                intstart = None
+
+        print(intervals)
+        ## Now cut these parts out of the clip:
+        cutclip = self.movie
+        for interval in intervals:
+            cutclip = cutclip.cutout(interval[0]/cutclip.fps,interval[1]/cutclip.fps)
+        cutclip.write_videofile(name+'.mp4',codec= 'mpeg4',bitrate = '1000k')
+
 
     def return_cropped_view(self,mice,frame,radius = 64):
         mouse_views = []
@@ -700,6 +1911,8 @@ class social_dataset(object):
             clip_final = clip_rot[yminf:ymaxf,xminf:xmaxf]
             mouse_views.append(clip_final)
         return mouse_views
+
+############################## Tensorflow functions
 
     def write_cropped_rotated_tfrecords(self,mouse,filename,cut =None):
         writer = tf.python_io.TFRecordWriter(filename)
@@ -791,7 +2004,7 @@ class social_dataset(object):
 
             all_thetas.append(mouse_thetas)
             all_rs.append(mouse_rs)
-        names = ['Virgin','Mother']
+        names = ['Virgin','Dam']
         colors = ['red','blue']
         for frame in range(1500):
             f = plt.figure(figsize = (20,20))
