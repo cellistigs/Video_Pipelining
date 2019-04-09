@@ -46,7 +46,7 @@ def crop_videos(cwd = None):
     all_sub = next(os.walk(cwd))[1]
     print(all_sub[5:])
     all_sub = all_sub
-    for sub in all_sub[5:]:
+    for sub in all_sub:
         files = os.listdir(cwd+'/'+sub)
         # Only look at videos
         videos = [video for video in files if video.split('.')[-1] == 'avi']
