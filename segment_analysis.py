@@ -29,7 +29,7 @@ if __name__ == '__main__':
     datasets = []
     for i,datatup in enumerate(datatuple):
         ## Load Datasets 
-        dataset = social_dataset(datatup[0])
+        dataset = social_dataset(datatup[0],vers= 1)
         ## Import Movies
         dataset.import_movie(datatup[1])
         ## Clean data
