@@ -18,11 +18,15 @@ def moviepath(filepath):
 if __name__ == '__main__':
     ## Load in the training data: 
     trainingdatapath = "../DeepLabCut/pose-tensorflow/models/UnaugmentedDataSet_social_v3Nov2/data-social_v3/"
-    traindata = training_dataset(trainingdatapath+'CollectedData_Taiga.h5',trainingdatapath)
+    traindata = training_dataset1(trainingdatapath+'CollectedData_Taiga.h5',trainingdatapath)
     vstats,mstats = [traindata.stats_wholemouse([i+1 for i in range(100)],m) for m in range(2)] 
     ## Load in all relevant files
     folderpath = sys.argv[1]
     datafiles = filepaths(folderpath)
+    ## Load in the nest information from the config file: 
+    sys.path.insert(0,folderpath)
+    ## Gross but less gross than other things
+    from config import xn,yn
     ## Analyze with accompanying movies (parallelize?)
     moviefiles = [moviepath(filepath) for filepath in datafiles] 
     datatuple = zip(datafiles,moviefiles)
@@ -32,6 +36,7 @@ if __name__ == '__main__':
         dataset = social_dataset(datatup[0])
         ## Import Movies
         dataset.import_movie(datatup[1])
+        dataset.bounds = (xn,yn)
         ## Clean data
         dataset.filter_full(vstats,mstats)
         ## Find shepherding events. 
