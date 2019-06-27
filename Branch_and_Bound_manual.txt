@@ -32,5 +32,8 @@ Current speed benchmark: 1 step = 70 ms
 Implemented speedups in get_inter, get intra functions. Configurations are more easy to convert into indices for these constructions than previously thought; lead to fast improvements. 
 Current speed benchmark: 1 step = 50 ms
 
-
+## 6/25/2019: 
+Rewrote all costs as indexing. Still seems to be some scaling with depth. 
+Current speed benchmark 1 step (at beginning of trajectory) = 4 ms. 70 nodes in: 12 ms 
+Seem to be issues with updating the cost efficiently: do some visualization, and examine what's really going on. 
 
