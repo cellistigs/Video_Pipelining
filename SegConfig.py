@@ -393,10 +393,10 @@ class Configuration(object):
     ## TODO: vaildate get_valid0 against the whole trajectory. 
     def get_valid(self,query = None,start = None,end = None,check= True): 
         if check == True:
-            config = self.return_checked(query)
+            config = self.return_checked(query,start=start,end =end)
         else:
             if query is None:
-                config = self.work_config
+                config = self.work_config[start:end]
             else:
                 config = query
         ## Start with the working configuration: 
@@ -476,6 +476,7 @@ class Configuration(object):
                 config = self.work_config[start:end]
             else:
                 config = query
+        ## Returns aligned to the start provided for indexing into the config provided. 
         valids = self.get_valid(config,start = start,end = end,check = False)
         tvs = np.ones(self.all_tvs[start:end].shape)*np.nan
         for i in range(2):
@@ -612,6 +613,7 @@ class Configuration(object):
             startp = 0
         else:
             startp = start
+        ## Returns aligned to the start provided.
         valid_inds = self.get_valid(config,start,end,check = False)
         # Now iterate over each mouse: 
         dist_length = np.max([len(config)-1,1])
@@ -620,8 +622,8 @@ class Configuration(object):
         for m in range(2):
             if len(valid_inds[m])>0:
                 mice_inds = config[valid_inds[m],m]
-                starts = self.all_starts[mice_inds[1:],valid_inds[m][1:]]
-                ends = self.all_ends[mice_inds[:-1],valid_inds[m][:-1]]
+                starts = self.all_starts[mice_inds[1:],valid_inds[m][1:]+startp]
+                ends = self.all_ends[mice_inds[:-1],valid_inds[m][:-1]+startp]
                 dist_all = np.linalg.norm(ends-starts,axis = 1)
                 dists[valid_inds[m][:-1],m] = dist_all
         return dists
@@ -1323,7 +1325,7 @@ class ConstrainedNode(object):
         return parentsig
 
 class Optimizer(object): 
-    def __init__(self,conf,strategy):
+    def __init__(self,conf,strategy,sort = 'LIFO'):
         self.conf = conf
         self.strategy = strategy 
         ## The strategy defines the conversion function to use and the overall length. 
@@ -1345,11 +1347,16 @@ class Optimizer(object):
         else:
             allowed_rep = [a for a in self.all_allowed for i in range(2)]
             self.root_node = ConstrainedNode([],self.length,allowed_rep,set_parent = [])
-        self.root_node.set_cost(0)
-        self.current_nodes = [self.root_node]
+
         self.estopt = self.conf.estimate_optimal_post()
-        #self.current_nodes = []
-        #heappush(self.current_nodes,(np.sum(self.estopt),0,0,self.root_node))
+        self.sort = sort
+        if sort == 'LIFO':
+            self.current_nodes = [self.root_node]
+        elif sort == 'Priority':
+            self.current_nodes = []
+            heappush(self.current_nodes,(np.sum(self.estopt),0,0,self.root_node))
+        self.root_node.set_cost(0)
+            
         self.boundcost = self.conf.full_cost()
         self.solutions = []
             
@@ -1476,6 +1483,60 @@ class Optimizer(object):
             cost = np.min(branchcost+bridgepre+bridgepost+precost+postcost)
         return cost
 
+    ## This version cuts out the branching within the bound altogether. 
+    def boundopt0(self,node,depth = 1):
+        ## Split up the trajectory into two parts: before the branch, and during the branch: 
+        query = self.s2q_default(node.signature,self.conf.work_config) 
+        ## First calculate the cost on the query up to the current point. 
+        if self.strategy == 'both':
+            prolif_start = node.depth
+        else: 
+            prolif_start = node.depth//2
+        parentcost = node.parent.get_cost()
+        diffbridge_pre = self.conf.bridge_cost_opt(query = query,split=prolif_start-1,check = False)
+        diffcost = self.conf.cut_cost(query = query[prolif_start-1:prolif_start],start = prolif_start-1,end = prolif_start,check = False)
+        nodecost = parentcost+diffcost+diffbridge_pre
+        node.set_cost(nodecost)
+        ## Now calculate the cost for after the branching is done too: 
+        postcost = np.nansum(self.estopt[prolif_start:])
+        ## Get the bridge: 
+        bridge = self.conf.bridge_cost(query = query, split = prolif_start) 
+        cost = np.min(bridge+nodecost+postcost)
+        return cost
+
+    ## This version learns from boundopt0, and the fact that the heuristics are too low of a bound.  
+    def boundopt1(self,node,depth = 5):
+        ## Now split the trajectory into three parts: before the node,  
+        ## Split up the trajectory into three parts: before the branch, after the branch, and during the branch: 
+        traverse_depth = np.min([depth,self.length-node.depth])
+        query = self.s2q_default(node.signature,self.conf.work_config) 
+        if traverse_depth == 0:
+            cost = self.conf.full_cost(query = query,check = False)
+        else:
+            ## First calculate the cost on the query up to the current point. 
+            if self.strategy == 'both':
+                prolif_start = node.depth
+                prolif_end = (node.depth+traverse_depth)
+            else: 
+                prolif_start = node.depth//2
+                prolif_end = np.ceil((node.depth+traverse_depth+1)/2).astype(int) 
+            parentcost = node.parent.get_cost()
+            diffcost = self.conf.cut_cost(query = query[prolif_start-1:prolif_start],start = prolif_start-1,end = prolif_start,check = False)
+            diffbridge_pre = self.conf.bridge_cost_opt(query = query,split=prolif_start-1,check = False)
+            nodecost = parentcost+diffcost+diffbridge_pre
+            node.set_cost(nodecost)
+            ## Now calculate the cost optimally: 
+            optcost = np.nansum(self.estopt[prolif_start:prolif_end])
+            ## Now calculate the cost after: 
+            postcost = self.conf.cut_cost(query = self.boundquery[prolif_end:],start = prolif_end,check = False)
+            ## Bridge optimally: 
+            diffbridge_post = self.conf.bridge_cost_opt(query = self.boundquery,split =prolif_end,check =False)
+            cost = nodecost+optcost+diffbridge_post+postcost 
+        return cost
+
+
+
+
     def boundopt(self,node,depth = 1):
         ## Split up the trajectory into three parts: before the branch, after the branch, and during the branch: 
         traverse_depth = np.min([depth,self.length-node.depth])
@@ -1490,7 +1551,6 @@ class Optimizer(object):
             else: 
                 prolif_start = node.depth//2
                 prolif_end = np.ceil((node.depth+traverse_depth+1)/2).astype(int) 
-            precost = self.conf.cut_cost(query = query[:prolif_start],end = prolif_start,check = False)
             parentcost = node.parent.get_cost()
             diffcost = self.conf.cut_cost(query = query[prolif_start-1:prolif_start],start = prolif_start-1,end = prolif_start,check = False)
             diffbridge = self.conf.bridge_cost_opt(query = query,split=prolif_start-1,check = False)
@@ -1570,6 +1630,71 @@ class Optimizer(object):
                 else:
                     self.current_nodes.append(node)
 
+    def stepopt1(self,i,debug = False):
+        ## Get an element from the current node list: 
+        if self.sort == 'LIFO':
+            node = self.current_nodes.pop()
+        elif self.sort == 'Priority':
+            cost,_,_,node = heappop(self.current_nodes)
+        candidates = self.branch(node)
+        if candidates is None: 
+            print('solution')
+
+            query = self.s2q(node.signature)
+            cost = self.conf.full_cost(query,check = False)
+            if cost<=self.boundcost:
+                self.boundcost = cost
+                self.solutions.append(node)
+                ## Also have a query that corresponds to the current best solution
+                self.boundquery = node.query
+        else:
+            for n,node in enumerate(candidates):
+                l = len(candidates[0].signature)
+                print(l)
+                nodebound = self.boundopt1(node)
+                if nodebound >self.boundcost:
+                    pass
+                    #print('pruned')
+                else:
+                    #print('passed')
+                    if self.sort == 'LIFO':
+                        self.current_nodes.append(node)
+                    elif self.sort == 'Priority':
+                        heappush(self.current_nodes,(nodebound,i+1,n,node))
+                    if debug == True:
+                        query = self.s2q(node.signature)
+                        import pdb; pdb.set_trace()
+
+    def stepopt0(self,i,debug = False):
+        ## Get an element from the current node list: 
+        if self.sort == 'LIFO':
+            node = self.current_nodes.pop()
+        elif self.sort == 'Priority':
+            cost,_,_,node = heappop(self.current_nodes)
+        candidates = self.branch(node)
+        if candidates is None: 
+
+            query = self.s2q(node.signature)
+            cost = self.conf.full_cost(query,check = False)
+            if cost<=self.boundcost:
+                self.boundcost = cost
+                self.solutions.append(node)
+        else:
+            for n,node in enumerate(candidates):
+                l = len(candidates[0].signature)
+                nodebound = self.boundopt0(node)
+                if nodebound >self.boundcost:
+                    pass
+                else:
+                    if self.sort == 'LIFO':
+                        self.current_nodes.append(node)
+                    elif self.sort == 'Priority':
+                        heappush(self.current_nodes,(nodebound,i+1,n,node))
+                    if debug == True:
+                        query = self.s2q(node.signature)
+                        import pdb; pdb.set_trace()
+
+
     def stepopt(self,depth = 1):
         ## Get an element from the current node list: 
         #cost,_,_,node = heappop(self.current_nodes)
@@ -1603,6 +1728,19 @@ class Optimizer(object):
             print(i)
             i+=1
     
+    def optimize_opt1(self,debug = False):
+        i = 0
+        self.boundquery = self.conf.work_config
+        while len(self.current_nodes)>0:
+            self.stepopt1(i,debug = debug)
+            i+=1
+
+    def optimize_opt0(self,debug = False):
+        i = 0
+        while len(self.current_nodes)>0:
+            self.stepopt0(i,debug = debug)
+            i+=1
+
     def optimize_opt(self,depth = 1):
         i = 0
         while len(self.current_nodes)>0:
@@ -1742,6 +1880,34 @@ def check_optimum(config,test):
         pert_cost = config.full_cost(dummyquery.astype(int))
         diff2[j] = pert_cost-gt_cost
     return diff1,diff2
+
+## Lay out an expansion around the ground truth at every point. 
+def linearize_path(opt,test):
+    ## Get the root node: 
+    node = opt.root_node
+    ## Get the groundtruth query: 
+    gt_query = opt.conf.return_checked(generate_groundtruth(test))
+    ## Convert this to a signature: 
+    bump = gt_query+1
+    sig = bump[:,0]+bump[:,1]*3
+    ## Now iterate through the whole segment set once: 
+    all_tings = []
+    for i in range(opt.conf.nb_segs):
+        children = node.children()
+        childqs = [c.signature for c in children]
+        childindex = np.where(childqs == sig[i])[0][0]
+        node = children[childindex]
+        boundchild = np.array([opt.boundopt1(cn,depth = 4) for cn in children])
+        boundchild = boundchild-boundchild[childindex]
+        all_tings.append(boundchild)
+    return np.array(all_tings)
+
+        
+        
+    
+
+    
+
 
 
     ## Use the optimal regularization terms to calculate the best way to estimate the cost.
