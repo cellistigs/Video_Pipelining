@@ -439,6 +439,13 @@ class Configuration(object):
 
     ## Get the valid segment indices that flank this point. 
     ## We have to do some low level stuff here: 
+    def get_valid_surr_both(self,segindex,query = None,check = True):
+        surrs = []
+        for i in range(2):
+            start,end = self.get_valid_surr(segindex,i,query,check)
+            surrs.append([start,end])
+        return surrs
+
     def get_valid_surr(self,segindex,mouse,query = None,check = True):
         if check == True:
             config = self.return_checked(query)
@@ -479,19 +486,6 @@ class Configuration(object):
             tvs[valids[i],i] = self.all_tvs[valids[i],mice_ids[i]]
         return tvs
 
-    ## Deprecated. here for reference in case of fires
-    #def get_intra(self,query = None,check = True):
-    #    if check == True:
-    #        config = self.return_checked(query)
-    #    else:
-    #        if query is None:
-    #            config = self.work_config
-    #        else:
-    #            config = query
-    #    inputs = zip(self.segs,config)
-    #    tv = np.stack([self.segs[i].get_tv(config[i]) for i in range(self.nb_segs)])
-    #    return tv
-    
     def get_intra_cut(self,query = None,start = None,end = None,check = True):
         if check == True:
             config = self.return_checked(query,start = start,end = end)
@@ -512,18 +506,6 @@ class Configuration(object):
                 mice_ids = config[valids[i],i]
                 tvs[valids[i],i] = self.all_tvs[valids[i]+startp,mice_ids]
         return tvs
-    
-    #def get_intra_cut(self,query = None,start = None,end = None,check = True):
-    #    if check == True:
-    #        config = self.return_checked(query,start = start,end = end)
-    #    else:
-    #        if query is None:
-    #            config = self.work_config[start:end]
-    #        else:
-    #            config = query
-    #    inputs = zip(self.segs[start:end],config)
-    #    tv = np.stack(list(map(lambda x: Segment.get_tv(*x),inputs)))
-    #    return tv
     
     def get_intra_dist(self,query = None):
         config = self.return_checked(query)
@@ -570,19 +552,20 @@ class Configuration(object):
                 tvs = self.mweights[endtime:starttime,m]-self.sweights[endtime:starttime,m]
                 tv_opt = np.sum(tvs)
                 dists[0,m] = tv_opt 
-            elif valid_inds[m][0] != 0:
-                endtime = 0
-                starttime = self.segs[valid_inds[m][0]].timeindex[0]
-                ## Query the moving average weights we collected, and be optimistic:  
-                tvs = self.mweights[endtime:starttime,m]-self.sweights[endtime:starttime,m]
-                tv_opt = np.sum(tvs)
-                dists[0,m] = tv_opt 
-            elif valid_inds[m][-1] != self.nb_segs-1:
-                endtime = self.segs[valid_inds[m][-1]].timeindex[-1]
-                starttime = self.length
-                tvs = self.mweights[endtime:starttime,m]-self.sweights[endtime:starttime,m]
-                tv_opt = np.sum(tvs)
-                dists[-1,m] = tv_opt 
+            else:
+                if valid_inds[m][0] != 0:
+                    endtime = 0
+                    starttime = self.segs[valid_inds[m][0]].timeindex[0]
+                    ## Query the moving average weights we collected, and be optimistic:  
+                    tvs = self.mweights[endtime:starttime,m]-self.sweights[endtime:starttime,m]
+                    tv_opt = np.sum(tvs)
+                    dists[0,m] = tv_opt 
+                if valid_inds[m][-1] != self.nb_segs-1:
+                    endtime = self.segs[valid_inds[m][-1]].timeindex[-1]
+                    starttime = self.length
+                    tvs = self.mweights[endtime:starttime,m]-self.sweights[endtime:starttime,m]
+                    tv_opt = np.sum(tvs)
+                    dists[-1,m] = tv_opt 
         
         return dists
 
@@ -598,11 +581,8 @@ class Configuration(object):
             startp = 0
         else:
             startp = start
-        print(start,end)
-        print(self.nb_segs-startp-1)
         ## Returns aligned to the start provided.
         valid_inds = self.get_valid(config,start,end,check = False)
-        print(valid_inds)
         # Now iterate over each mouse: 
         dist_length = np.max([len(config)-1,1])
         dists  = np.zeros((dist_length,2)) 
@@ -616,81 +596,78 @@ class Configuration(object):
                 dists[valid_inds[m][:-1],m] = dist_all
             ## We have some annoying edge cases:
             ## There are no valid indices in this segment. 
+            ## If this is the full trajectory, we should handle this. otherwise, don't worry, we have other functions to handle this case. 
             ## If this is the case, don't worry. We have other functions to handle this case. 
             if len(valid_inds[m]) == 0:
-                pass
-            ## The beginning is the beginning of the actual trajectory
-            elif valid_inds[m][0] != 0 and start is None or start is 0:
-                endtime = 0
-                starttime = self.segs[valid_inds[m][0]].timeindex[0]
-                ## Query the moving average weights we collected, and be optimistic:  
-                tvs = self.mweights[endtime:starttime,m]-self.sweights[endtime:starttime,m]
-                tv_opt = np.sum(tvs)
-                dists[0,m] = tv_opt 
-            elif valid_inds[m][-1] != self.nb_segs-startp and end is None or end is self.nb_segs:
-                print('here!')
-                endtime = self.segs[valid_inds[m][-1]].timeindex[-1]
-                starttime = self.length
-                tvs = self.mweights[endtime:starttime,m]-self.sweights[endtime:starttime,m]
-                tv_opt = np.sum(tvs)
-                dists[-1,m] = tv_opt 
+                if (start is None or start is 0) and (end is None or end is self.nb_segs): 
+                    endtime = 0
+                    starttime = self.length
+                    tvs = self.mweights[endtime:starttime,m]-self.sweights[endtime:starttime,m]
+                    tv_opt = np.sum(tvs)
+                    dists[0,m] = tv_opt 
+                else:
+                    pass
+            else:
+                ## The beginning is the beginning of the actual trajectory
+                if valid_inds[m][0] != 0 and start is None or start is 0:
+                    endtime = 0
+                    starttime = self.segs[valid_inds[m][0]+startp].timeindex[0]
+                    ## Query the moving average weights we collected, and be optimistic:  
+                    tvs = self.mweights[endtime:starttime,m]-self.sweights[endtime:starttime,m]
+                    tv_opt = np.sum(tvs)
+                    dists[0,m] = tv_opt 
+                if valid_inds[m][-1] != self.nb_segs-startp-1 and end is None or end is self.nb_segs:
+                    endtime = self.segs[valid_inds[m][-1]+startp].timeindex[-1]
+                    starttime = self.length
+                    tvs = self.mweights[endtime:starttime,m]-self.sweights[endtime:starttime,m]
+                    tv_opt = np.sum(tvs)
+                    dists[-1,m] = tv_opt 
         return dists
 
-    def get_inter_optimal(self,query = None,check = True):    
-            config = self.return_checked(query)
-        else:
-            if query is None:
-                config = self.work_config
-            else:
-                config = query
-        valid_inds = self.get_valid(config,check = check)
-        # Now iterate over each mouse: 
-        length_tv = np.max([len(config)-1,1])
-        tv_opts = np.zeros((length_tv,2)) 
-        for m in range(2):
-            mouse_valid = valid_inds[m]
-            ## Now we would like to identify all pairs: 
-            pairs = [mouse_valid[i:i+2] for i in range(len(mouse_valid)-1)]
-            for pair in pairs: 
-                endtime = self.segs[pair[0]].timeindex[-1]-1
-                starttime = self.segs[pair[-1]].timeindex[0]  
-                ## Query the moving average weights we collected, and be optimistic:  
-                tvs = self.mweights[endtime:starttime,m]#-self.sweights[endtime:starttime,m]
-                tv_opt = np.sum(tvs)
-                tv_opts[pair[0],m] = tv_opt 
-            if len(mouse_valid) == 0:
-                endtime = 0
-                starttime = self.length
-                tvs = self.mweights[endtime:starttime,m]#-self.sweights[endtime:starttime,m]
-                tv_opt = np.sum(tvs)
-                tv_opts[0,m] = tv_opt 
-            elif mouse_valid[0] != 0:
-                endtime = 0
-                starttime = self.segs[mouse_valid[0]].timeindex[0]
-                ## Query the moving average weights we collected, and be optimistic:  
-                tvs = self.mweights[endtime:starttime,m]#-self.sweights[endtime:starttime,m]
-                tv_opt = np.sum(tvs)
-                tv_opts[0,m] = tv_opt 
-            elif mouse_valid[-1] != len(tv_opts):
-                endtime = self.segs[mouse_valid[-1]].timeindex[-1]-1
-                starttime = self.length 
-                tvs = self.mweights[endtime:starttime,m]#-self.sweights[endtime:starttime,m]
-                tv_opt = np.sum(tvs)
-                tv_opts[-1,m] = tv_opt 
-        return tv_opts
+    #def get_inter_optimal(self,query = None,check = True):    
+    #    if check == True:
+    #        config = self.return_checked(query)
+    #    else:
+    #        if query is None:
+    #            config = self.work_config
+    #        else:
+    #            config = query
+    #    valid_inds = self.get_valid(config,check = check)
+    #    # Now iterate over each mouse: 
+    #    length_tv = np.max([len(config)-1,1])
+    #    tv_opts = np.zeros((length_tv,2)) 
+    #    for m in range(2):
+    #        mouse_valid = valid_inds[m]
+    #        ## Now we would like to identify all pairs: 
+    #        pairs = [mouse_valid[i:i+2] for i in range(len(mouse_valid)-1)]
+    #        for pair in pairs: 
+    #            endtime = self.segs[pair[0]].timeindex[-1]-1
+    #            starttime = self.segs[pair[-1]].timeindex[0]  
+    #            ## Query the moving average weights we collected, and be optimistic:  
+    #            tvs = self.mweights[endtime:starttime,m]#-self.sweights[endtime:starttime,m]
+    #            tv_opt = np.sum(tvs)
+    #            tv_opts[pair[0],m] = tv_opt 
+    #        if len(mouse_valid) == 0:
+    #            endtime = 0
+    #            starttime = self.length
+    #            tvs = self.mweights[endtime:starttime,m]#-self.sweights[endtime:starttime,m]
+    #            tv_opt = np.sum(tvs)
+    #            tv_opts[0,m] = tv_opt 
+    #        elif mouse_valid[0] != 0:
+    #            endtime = 0
+    #            starttime = self.segs[mouse_valid[0]].timeindex[0]
+    #            ## Query the moving average weights we collected, and be optimistic:  
+    #            tvs = self.mweights[endtime:starttime,m]#-self.sweights[endtime:starttime,m]
+    #            tv_opt = np.sum(tvs)
+    #            tv_opts[0,m] = tv_opt 
+    #        elif mouse_valid[-1] != len(tv_opts):
+    #            endtime = self.segs[mouse_valid[-1]].timeindex[-1]-1
+    #            starttime = self.length 
+    #            tvs = self.mweights[endtime:starttime,m]#-self.sweights[endtime:starttime,m]
+    #            tv_opt = np.sum(tvs)
+    #            tv_opts[-1,m] = tv_opt 
+    #    return tv_opts
 
-    #def get_inter_optimal_cut(self,query = None,start = None,end = None,check = True):
-    #    ## Convert to time indices
-    #    if start is None:
-    #        start = 0
-    #    if end is None:
-    #        end = self.nb_segs-1
-    #    starttime = self.segs[start].timeindex[0]
-    #    endtime = self.segs[end].timeindex[-1]
-    #    tvs = self.mweights[starttime:endtime]#-self.sweights[endtime:starttime,m]
-    #    return tvs
-    #    #tv_opt = np.sum(tvs)
-    #    #tv_opts[pair[0]-startp,m] = tv_opt 
 
     def get_inter_optimal_cut(self,query = None,start = None,end = None,check = True):
         if check == True:
@@ -983,6 +960,7 @@ class Configuration(object):
         cut_p1 = self.cut_nullcost(query=config,start=start,end=end,check=False)
         cut_p2 = self.cut_switchcost(query=config,start=start,end=end,check=False)
         return cut_tv+cut_p1+cut_p2
+
 ## Most important here is corner case behavior. get consistency with get_inter: this means that in cases where either start or end is None, we go instead to the optimal tv enforced behavior.  
     def bridge_cost(self,query = None,split = 0,check = True,inds = [0,1]):
         if check == True:
@@ -992,7 +970,7 @@ class Configuration(object):
                 config = self.work_config
             else:
                 config = query
-        additional_cost = 0
+        additional_cost = np.zeros((1,2)) 
         for ind in inds:
             end,start = self.get_valid_surr(split,ind,config,False)
             ## If either is None, we revert to using time 
@@ -1011,7 +989,7 @@ class Configuration(object):
                 endpos = self.segs[end].get_end(mouse = ind,query = config[end])
                 startpos = self.segs[start].get_start(mouse = ind,query = config[start])
                 dist = np.linalg.norm(startpos-endpos)
-            additional_cost+=dist
+            additional_cost[0,ind]+=dist
         return additional_cost
 
 ## Now consider a function that takes in the start and stop at once, and does not return the full cost if the borders are the same. 
@@ -1051,47 +1029,7 @@ class Configuration(object):
                 endold,startold = end,start
         return additional_cost
 
-## This is actually harder than it looks. For the pre splits, the lagging valid index should be the one that the split segment ends on. for the post split, the valid index syould be one the one the split segment starts on. Could be very FUCKED uP
-    def bridge_cost_border_preopt(self,query = None,splits = [0,0],check = True,inds = [0,1]):
-        if check == True:
-            config = self.return_checked(query)
-        else:
-            if query is None:
-                config = self.work_config
-            else:
-                config = query
-        additional_cost = 0
-        for ind in inds:
-            for s,split in enumerate(splits):
-                if split == 0 or split == self.nb_segs-1: 
-                    pass
-                else:
-                    end,start = self.get_valid_surr(split,ind,config,False)
-                    ## Trim the new start: 
-                    if s == 0:
-                        start = split+1
-                    elif s == 1:
-                        end = split-1
-
-                    ## If either is None, we revert to using time. If it's the first bridge, we also revert to using time.  
-                    if end is None:
-                        endtime = self.segs[0].timeindex[0] 
-                    else:
-                        endtime= self.segs[end].timeindex[-1]
-                    if start is None:
-                        starttime = self.segs[-1].timeindex[-1]
-                    else:
-                        starttime = self.segs[start].timeindex[0]
-                    tvs = self.mweights[endtime:starttime,ind]-self.sweights[endtime:starttime,ind]
-                    dist = np.nansum(tvs)
-                    #else:
-                    #    endpos = self.segs[end].get_end(mouse = ind,query = config[end])
-                    #    startpos = self.segs[start].get_start(mouse = ind,query = config[start])
-                    #    dist = np.linalg.norm(startpos-endpos)
-                    additional_cost+=dist
-            endold,startold = end,start
-        return additional_cost
-
+## This is actually harder than it looks. For the pre splits, the lagging valid index should be the one that the split segment ends on. for the post split, the valid index syould be one the one the split segment starts on. is essentially an unused base function: real versions are pre or post and modify the bounds accordingly  
     def bridge_cost_opt(self,query = None,split = 0,check = True,inds = [0,1]):
         if check == True:
             config = self.return_checked(query)
@@ -1100,7 +1038,7 @@ class Configuration(object):
                 config = self.work_config
             else:
                 config = query
-        additional_cost = 0
+        additional_cost = np.zeros((1,2)) 
         for ind in inds:
             end,start = self.get_valid_surr(split,ind,config,False)
             if end is None:
@@ -1116,10 +1054,11 @@ class Configuration(object):
             #else:
             tvs = self.mweights[endtime:starttime,ind]-self.sweights[endtime:starttime,ind]
             tvopt = np.nansum(tvs)
-            additional_cost+=tvopt
+            additional_cost[0,ind]=tvopt
         return additional_cost
 
-    def bridge_adaptive(self,prolif_start,prolif_end,query = None, check = True):
+    ## Version that happens with optimal things afterwards:  
+    def bridge_cost_opt_pre(self,query = None,split = 0,check = True,inds = [0,1]):
         if check == True:
             config = self.return_checked(query)
         else:
@@ -1127,20 +1066,47 @@ class Configuration(object):
                 config = self.work_config
             else:
                 config = query
-        ## Now, check if the segment is valid under this query:  
-        valcheck = config[prolif_start:prolif_end]
-        for i in range(2): 
-            vals = valcheck[:,i]
-            if np.all(vals == -1):
-                bridge = self.bridge_cost_opt(query = config, split = prolif_end,inds = [i],check = check) 
+        additional_cost = np.zeros((1,2)) 
+        for ind in inds:
+            end,start = self.get_valid_surr(split,ind,config,False)
+            if end is None:
+                endtime = self.segs[0].timeindex[0] 
             else:
-                bridgepre = self.bridge_cost(query = config, split = prolif_start,inds = [i],check = check) 
-                ## Should be beginning of estimation: use the optimal.
-                bridgepost = self.bridge_cost_opt(query = config, split = prolif_end,inds = [i],check = check) 
-                bridge = bridgepre+bridgepost
-        return bridge
+                endtime= self.segs[end].timeindex[-1]
+            start = split
+            starttime = self.segs[start].timeindex[0]
+            #if start is None end is None: 
+            #    pass
+            #else:
+            tvs = self.mweights[endtime:starttime,ind]-self.sweights[endtime:starttime,ind]
+            tvopt = np.nansum(tvs)
+            additional_cost[0,ind]=tvopt
+        return additional_cost
 
-        
+    def bridge_cost_opt_post(self,query = None,split = 0,check = True,inds = [0,1]):
+        if check == True:
+            config = self.return_checked(query)
+        else:
+            if query is None:
+                config = self.work_config
+            else:
+                config = query
+        additional_cost = np.zeros((1,2)) 
+        for ind in inds:
+            end,start = self.get_valid_surr(split,ind,config,False)
+            end = split-1
+            endtime = self.segs[end].timeindex[-1] 
+            if start is None:
+                starttime = self.segs[-1].timeindex[-1]
+            else:
+                starttime = self.segs[start].timeindex[0]
+            #if start is None end is None: 
+            #    pass
+            #else:
+            tvs = self.mweights[endtime:starttime,ind]-self.sweights[endtime:starttime,ind]
+            tvopt = np.nansum(tvs)
+            additional_cost[0,ind]=tvopt
+        return additional_cost
 
     ## Basically a test function to check the validity of what we're doing. 
     def split_efficient(self,query = None,split = 0,check = True):
@@ -1450,13 +1416,16 @@ def allowed2s_single(allowed):
 
 def allowed2s_double(allowed):
     ## This function takes in a single allowed index corresponding to a single segment, and spits out a list of allowed signature values at the relevant points. 
+    ## Define the ordering we want to use (important for algorithm implementation): 
+    order = np.flip([7,5,6,1,3,2,0])
     ## First, we construct all allowable pairs. 
-    allowed_pairs = [np.array([mi,mj])+1 for mi in allowed for mj in allowed if mi != mj or (mi==-1 and mj ==-1) ]
+    allowed_pairs = [np.array([mi,mj])+1 for mi in allowed for mj in np.flip(allowed) if mi != mj or (mi==-1 and mj ==-1) ]
     ## We will construct a function to map these to integers as we would like: 
     to_double = lambda x: x[0]+x[1]*3
     sig_allowed = list(map(to_double,allowed_pairs))
+    porder = [o for o in order if o in sig_allowed]
 
-    return sig_allowed
+    return porder  
 
 ## The Configuration object that have built up can handle a lot of the machinery that we care about. However, the actual optimization of a query configuration should be handled by something that can easily manipulate the query object as necessary. handles two different estimation routines: 1. estimation by estimating the distance covered. 2. estimation by shotgun blackout of certain configuration entries. Give a traversal strategy: left to right, right to left, or both entries at once (should be okay if fast enough) 
 ## As a helper object, we introduce a ConstrainedNode class to allow us to traverse this easily. We have a depth argument, that indicates how far down the chain this node is. The maximum for this should be nb_segs-1
@@ -1616,90 +1585,34 @@ class Optimizer(object):
                 query[elim-1,0] =-2
         return query
 
-    ## A check function to make sure that this generates desired answers.
-    def bound0_new_check(self,node,depth = 2):
-        ## Split up the trajectory into three parts: before the branch, after the branch, and during the branch: 
-        traverse_depth = np.min([depth,self.length-node.depth])
-        query = self.blackout_query(self.conf.work_config,node) 
-        if traverse_depth == 0:
-            cost = self.conf.full_cost(query = query,check = True)
-        else:
-            ## First calculate the cost on the query up to the current point. 
-            if self.strategy == 'both':
-                prolif_start = node.depth
-                prolif_end = (node.depth+depth)
-            else: 
-                prolif_start = node.depth//2
-                prolif_end = np.ceil((node.depth+depth+1)/2).astype(int) 
-            precost = self.conf.cut_cost(query = query[:prolif_start],end = prolif_start,check = True)
-            ## Now calculate the cost for after the branching is done too: 
-            postcost = self.conf.cut_cost(query = query[prolif_end:],start = prolif_end,check = True)
-            childqs = [self.blackout_query(self.conf.work_config,node.descendants(depth)[0])]
-            childqs_trunc = [childqs[0][prolif_start:prolif_end]]
-            ## Get the main costs in these parts: 
-            branchcost = np.array([self.conf.cut_cost(query = q,start = prolif_start,end=prolif_end,check = True) for q in childqs_trunc]) 
-            ## Get the bridge before and after: 
-            bridgepre = np.array([self.conf.bridge_cost(query = q, split = prolif_start) for q in childqs]) 
-            bridgepost = np.array([self.conf.bridge_cost(query = q, split = prolif_end) for q in childqs]) 
-            ## Now calculate estimated costs for all children signatures: 
-            return branchcost+bridgepre+bridgepost+precost+postcost
-
-
-    def bound0_new(self,node,depth = 2):
-        ## Split up the trajectory into three parts: before the branch, after the branch, and during the branch: 
-        traverse_depth = np.min([depth,self.length-node.depth])
-        query = self.s2q(node.signature) 
-        if traverse_depth == 0:
-            cost = self.conf.full_cost(query = query,check = False)
-        else:
-            ## First calculate the cost on the query up to the current point. 
-            if self.strategy == 'both':
-                prolif_start = node.depth
-                prolif_end = (node.depth+depth)
-            else: 
-                prolif_start = node.depth//2
-                prolif_end = np.ceil((node.depth+depth+1)/2).astype(int) 
-            precost = self.conf.cut_cost(query = query[:prolif_start],end = prolif_start,check = False)
-            ## Now calculate the cost for after the branching is done too: 
-            postcost = self.conf.cut_cost(query = query[prolif_end:],start = prolif_end,check = False)
-            ## Now the part that actually branches: 
-            descendants = node.descendants(traverse_depth)
-            ## Get the parts of the signature that actually differ: 
-            childsigs = [des.signature for des in descendants]
-            childqs = [self.s2q(sig) for sig in childsigs]
-            childqs_trunc = [childq[prolif_start:prolif_end] for childq in childqs]
-            ## Get the main costs in these parts: 
-            branchcost = np.array([self.conf.cut_cost(query = q,start = prolif_start,end=prolif_end,check = False) for q in childqs_trunc]) 
-            ## Get the bridge before and after: 
-            bridgepre = np.array([self.conf.bridge_cost(query = q, split = prolif_start) for q in childqs]) 
-            bridgepost = np.array([self.conf.bridge_cost(query = q, split = prolif_end) for q in childqs]) 
-            ## Now calculate estimated costs for all children signatures: 
-            ## First convert children signatures to queries: 
-            cost = np.min(branchcost+bridgepre+bridgepost+precost+postcost)
-        return cost
-
-    ## This version cuts out the branching within the bound altogether. 
-    def boundopt0(self,node,depth = 1):
-        ## Split up the trajectory into two parts: before the branch, and during the branch: 
-        query = self.s2q_default(node.signature,self.conf.work_config) 
-        ## First calculate the cost on the query up to the current point. 
-        if self.strategy == 'both':
-            prolif_start = node.depth
-        else: 
-            prolif_start = node.depth//2
-        parentcost = node.parent.get_cost()
-        diffbridge_pre = self.conf.bridge_cost_opt(query = query,split=prolif_start-1,check = False)
-        diffcost = self.conf.cut_cost(query = query[prolif_start-1:prolif_start],start = prolif_start-1,end = prolif_start,check = False)
-        nodecost = parentcost+diffcost+diffbridge_pre
-        node.set_cost(nodecost)
-        ## Now calculate the cost for after the branching is done too: 
-        postcost = np.nansum(self.estopt[prolif_start:])
-        ## Get the bridge: 
-        bridge = self.conf.bridge_cost(query = query, split = prolif_start) 
-        cost = np.min(bridge+nodecost+postcost)
-        return cost
-
-
+    def create_boundopt(self,node,mainfuncs,bridgefuncs,depth = 5):
+        ## Insist that the function arguments are well designed as intentioned.  
+        assert type(mainfuncs) == list
+        assert len(mainfuncs) == 3 
+        assert type(bridgefuncs) == list
+        assert len(bridgefuncs) == 2
+        premain,midmain,postmain = mainfuncs
+        prebridge,postbridge = bridgefuncs 
+        ## Hardcoded for testing purposes:
+        split = 0 ## Hardcoded 
+        splitend = split+depth
+        query = self.s2q_default(node.signature,self.boundquery)
+        ## Back to adaptive things: 
+        precost = premain(query = query[:split],end = split)
+        print('pre',self.conf.get_valid(query[:split],end = split))
+        midcost = midmain(query = query[split:splitend],start = split,end = splitend)
+        print('mid',np.array(self.conf.get_valid(query[split:splitend],start = split,end = splitend))+split)
+        #print('mid',np.array(self.conf.get_invalid(query[split:splitend],start=split,end=splitend,check=False))+split)
+        postcost = postmain(query = query[splitend:],start = splitend)
+        print('post',np.array(self.conf.get_valid(query[splitend:],start = splitend))+splitend)
+        prebridgecost = prebridge(query = query,split = split)
+        print('bridge1',self.conf.get_valid_surr_both(split,query))
+        postbridgecost = postbridge(query = query,split = splitend)
+        print('bridge2',self.conf.get_valid_surr_both(splitend,query))
+        print(precost,midcost,postcost,prebridgecost,postbridgecost)
+        full_cost = np.nansum(precost)+np.nansum(midcost)+np.nansum(postcost)+np.nansum(prebridgecost)+np.nansum(postbridgecost)
+        return full_cost
+    
     def boundopt1_debug(self,node,depth = 5):
         ## Now split the trajectory into three parts: before the node,  
         ## Split up the trajectory into three parts: before the branch, after the branch, and during the branch: 
@@ -1729,11 +1642,12 @@ class Optimizer(object):
             print('post')
             postcost = self.conf.cut_cost(query=query[prolif_end:],start = prolif_end,check = False)
             ## Bridge optimally: 
-            diffbridge = self.conf.bridge_cost_border_preopt(query=query,splits =[prolif_start,prolif_end],check =False)
-            cost = precost+optcost+np.sum(diffbridge)+postcost 
-            add = [precost,optcost,np.sum(diffbridge),postcost]
+            diffbridge0 = self.conf.bridge_cost_opt_pre(query = query,split = prolif_start,check =False)
+            diffbridge1 = self.conf.bridge_cost_opt_post(query = query,split = prolif_end,check =False)
+            cost = precost+optcost+np.sum(diffbridge1)+np.sum(diffbridge0)+postcost 
+            add = [precost,optcost,np.sum(diffbridge0),np.sum(diffbridge1),postcost]
         return cost,add
-
+        
     def boundopt1(self,node,depth = 5):
         ## Now split the trajectory into three parts: before the node,  
         ## Split up the trajectory into three parts: before the branch, after the branch, and during the branch: 
@@ -1760,85 +1674,12 @@ class Optimizer(object):
             ## Now calculate the cost after: 
             postcost = self.conf.cut_cost(query = query[prolif_end:],start = prolif_end,check = False)
             ## Bridge optimally: 
-            diffbridge = self.conf.bridge_cost_border_preopt(query = query,splits =[prolif_start,prolif_end],check =False)
-            cost = precost+optcost+np.sum(diffbridge)+postcost 
+            diffbridge0 = self.conf.bridge_cost_opt_pre(query = query,split = prolif_start,check =False)
+            diffbridge1 = self.conf.bridge_cost_opt_post(query = query,split = prolif_end,check =False)
+            #diffbridge = self.conf.bridge_cost_border_preopt(query = query,splits =[prolif_start,prolif_end],check =False)
+            cost = precost+optcost+np.sum(diffbridge1)+np.sum(diffbridge0)+postcost 
         return cost
-
-    def boundopt(self,node,depth = 1):
-        ## Split up the trajectory into three parts: before the branch, after the branch, and during the branch: 
-        traverse_depth = np.min([depth,self.length-node.depth])
-        query = self.s2q_default(node.signature,self.conf.work_config) 
-        if traverse_depth == 0:
-            cost = self.conf.full_cost(query = query,check = False)
-        else:
-            ## First calculate the cost on the query up to the current point. 
-            if self.strategy == 'both':
-                prolif_start = node.depth
-                prolif_end = (node.depth+traverse_depth)
-            else: 
-                prolif_start = node.depth//2
-                prolif_end = np.ceil((node.depth+traverse_depth+1)/2).astype(int) 
-            parentcost = node.parent.get_cost()
-            diffcost = self.conf.cut_cost(query = query[prolif_start-1:prolif_start],start = prolif_start-1,end = prolif_start,check = False)
-            diffbridge = self.conf.bridge_cost_opt(query = query,split=prolif_start-1,check = False)
-            
-            nodecost = parentcost+diffcost
-            node.set_cost(nodecost)
-            ## Now calculate the cost for after the branching is done too: 
-            postcost = np.nansum(self.estopt[prolif_end:])
-            ## Now the part that actually branches: 
-            descendants = node.descendants(traverse_depth)
-            ## Get the parts of the signature that actually differ: 
-            childsigs = [des.signature for des in descendants]
-            childqs = [self.s2q_default(sig,self.conf.work_config) for sig in childsigs]
-            childqs_trunc = [childq[prolif_start:prolif_end] for childq in childqs]
-            ## Get the main costs in these parts: 
-            branchcost = np.array([self.conf.cut_cost(query = q,start = prolif_start,end=prolif_end,check = False) for q in childqs_trunc]) 
-            ## Get the bridge before and after: 
-            bridge = [self.conf.bridge_adaptive(query= q,prolif_start =prolif_start,prolif_end= prolif_end,check=False) for q in childqs]
-            #bridgepre = np.array([self.conf.bridge_cost(query = q, split = prolif_start) for q in childqs]) 
-            ### Should be beginning of estimation: use the optimal.
-            #bridgepost = np.array([self.conf.bridge_cost_opt(query = q, split = prolif_end) for q in childqs]) 
-            ## Now calculate estimated costs for all children signatures: 
-            ## First convert children signatures to queries: 
-            cost = np.min(branchcost+bridge+nodecost+postcost)
-        return cost
-
-    def bound(self,node,depth = 2):
-        i = 0
-        ## First clip the depth if necessary. 
-        exploredepth = node.depth+depth
-        ## Take max of this and the true depth. 
-        traverse_depth = np.min([depth,self.length-node.depth])
-        descendants = node.descendants(traverse_depth)
-        childsig = [des.signature for des in descendants]
-        ## Now calculate estimated costs for all children signatures: 
-        ## First convert children signatures to queries: 
-        queries = list(map(self.s2q,childsig))
-        ## Now estimate costs on the queries: 
-        split = len(node.signature)+depth
-        estimator = lambda query: self.conf.estimate_cost(100,1,query=query,split = split,check = False)
-        costs = list(map(estimator,queries))
-        return np.min(costs)
-
-    ## Now define a single branch-and-bound step: 
-    def step0_new(self,depth = 1):
-        ## Get an element from the current node list: 
-        node = self.current_nodes.pop()
-        candidates = self.branch(node)
-        if candidates is None: 
-            query = self.s2q(node.signature)
-            cost = self.conf.full_cost(query,check = False)
-            if cost<=self.boundcost:
-                self.boundcost = cost
-                self.solutions.append(node)
-        else:
-            for node in candidates:
-                if self.bound0_new(node,depth = depth)>self.boundcost:
-                    pass
-                else:
-                    self.current_nodes.append(node)
-
+    
     def stepopt1(self,i,debug = False):
         ## Get an element from the current node list: 
         if self.sort == 'LIFO':
@@ -1865,7 +1706,6 @@ class Optimizer(object):
                     pass
                     #print('pruned')
                 else:
-                    #print('passed')
                     if self.sort == 'LIFO':
                         self.current_nodes.append(node)
                     elif self.sort == 'Priority':
@@ -1873,93 +1713,12 @@ class Optimizer(object):
                     if debug == True:
                         query = self.s2q(node.signature)
                         import pdb; pdb.set_trace()
-
-    def stepopt0(self,i,debug = False):
-        ## Get an element from the current node list: 
-        if self.sort == 'LIFO':
-            node = self.current_nodes.pop()
-        elif self.sort == 'Priority':
-            cost,_,_,node = heappop(self.current_nodes)
-        candidates = self.branch(node)
-        if candidates is None: 
-
-            query = self.s2q(node.signature)
-            cost = self.conf.full_cost(query,check = False)
-            if cost<=self.boundcost:
-                self.boundcost = cost
-                self.solutions.append(node)
-        else:
-            for n,node in enumerate(candidates):
-                l = len(candidates[0].signature)
-                nodebound = self.boundopt0(node)
-                if nodebound >self.boundcost:
-                    pass
-                else:
-                    if self.sort == 'LIFO':
-                        self.current_nodes.append(node)
-                    elif self.sort == 'Priority':
-                        heappush(self.current_nodes,(nodebound,i+1,n,node))
-                    if debug == True:
-                        query = self.s2q(node.signature)
-                        import pdb; pdb.set_trace()
-
-
-    def stepopt(self,depth = 1):
-        ## Get an element from the current node list: 
-        #cost,_,_,node = heappop(self.current_nodes)
-        node = self.current_nodes.pop()
-        print(len(node.signature))
-        candidates = self.branch(node)
-        if candidates is None: 
-
-            query = self.s2q(node.signature)
-            cost = self.conf.full_cost(query,check = False)
-            if cost<=self.boundcost:
-                self.boundcost = cost
-                self.solutions.append(node)
-        else:
-            for n,node in enumerate(candidates):
-                l = len(candidates[0].signature)
-                nodebound = self.boundopt(node,depth = depth)
-                print(nodebound,'bound')
-                if nodebound >self.boundcost:
-                    pass
-                else:
-                    #heappush(self.current_nodes,(nodebound,i,n,node))
-                    self.current_nodes.append(node)
-
 
     ## Optimize:
-    def optimize0(self,depth = 1):
-        i = 0
-        while len(self.current_nodes)>0:
-            self.step0(depth)
-            print(i)
-            i+=1
-    
     def optimize_opt1(self,debug = False):
         i = 0
         while len(self.current_nodes)>0:
             self.stepopt1(i,debug = debug)
-            i+=1
-
-    def optimize_opt0(self,debug = False):
-        i = 0
-        while len(self.current_nodes)>0:
-            self.stepopt0(i,debug = debug)
-            i+=1
-
-    def optimize_opt(self,depth = 1):
-        i = 0
-        while len(self.current_nodes)>0:
-            self.stepopt(depth)
-            i+=1
-
-    def optimize(self,depth = 1):
-        i = 0
-        while len(self.current_nodes)>0:
-            self.step(depth)
-            print(i)
             i+=1
 
     ## Functions to handle solutions
@@ -1994,6 +1753,9 @@ class Optimizer(object):
     
     def groundtruth_cost(self,test):
         return self.conf.full_cost(generate_groundtruth(test))
+    
+    def groundtruth_query(self,test):
+        return self.conf.return_checked(generate_groundtruth(test))
 
     def solution_plots(self,best = True):
         if len(self.solutions) < 0:
