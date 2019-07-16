@@ -1,17 +1,26 @@
+import numpy as np
 import sys
+import os
+import joblib
 import pandas as pd
+from Social_Dataset_utils import filepaths,datapaths,excelpaths
+
 
 if __name__ == "__main__":
     folderpath = sys.argv[1]
+    unique_string = sys.argv[2].split('cropped_part')[0]
+    sheet_tag = excelpaths(folderpath)[0]
     dataset_paths = datapaths(folderpath)
+    file_paths = datapaths(folderpath) 
     ## Unique identifier to id the ones that we care about:
     ## Annoying: First get the number and positions of all datasets:
 
-    numbers = [int(d.split('cropped_part')[-1].split('DeepCut')[0]) for d in dataset_paths if unique_string in d]
-    max_ind = np.max(numbers)
+    #numbers = [int(d.split('cropped_part')[-1].split('DeepCut')[0]) for d in file_paths if unique_string in d and 'ethogram' not in d]
+    #max_ind = 47#np.max(numbers)
+    max_ind = 36#len(dataset_paths)-1 
 
     ## Behavior excel spreadsheet name: 
-    sheet_tag = sys.argv[2]
+    #sheet_tag = sys.argv[2]
     ## Write out some important strings: 
     behavior_tag = 'Behavior'
     start_tag = "Start (s)"
@@ -34,16 +43,15 @@ if __name__ == "__main__":
     
     ## Now package up the starts and stops : 
     ethogram_sources = [dam_pos,virg_pos,pursuit]
-    ethogram_name = ['Mother,Virgin,Pursuit']
+    ethogram_name = ['full_mother_nest_','full_virgin_nest_','full_pursuit_']
     for s,source in enumerate(ethogram_sources):
         ## initialize ethogram: 
-        ethogram  = np.zeros((1+max_ind)*36000,)*np.nan
-        for ind,ent in dam_pos.iterrows():
-            start,end = 30*ent[start_tag],30*ent[stop_tag]
+        ethogram  = np.zeros((1+max_ind)*36000,)
+        for ind,ent in source.iterrows():
+            start,end = np.round(30*ent[start_tag]).astype(int),np.round(30*ent[stop_tag]).astype(int)
             ethogram[start:end] = 1
             
-            print(ent[start_tag],ent[stop_tag])
-        namestring = folderpath+'/'+'dataset_'+ethogram_name[s]+'gt_ethogram'
+        namestring = folderpath+'/'+'dataset_'+unique_string+ethogram_name[s]+'gt_ethogram'
         joblib.dump(ethogram,namestring)
 
     

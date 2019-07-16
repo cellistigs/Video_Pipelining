@@ -42,7 +42,7 @@ class ProgressPercentage_u(object):
                         percentage))
             sys.stdout.flush()
 
-def download(BUCKET_NAME,KEY):
+def download(BUCKET_NAME,KEY,tempdir = '../vmnt/tmp_videos/'):
 
     s3 = boto3.resource('s3')
     # for the purposes of temporary storage, we only use the last bit of the name as an indentifier: 
@@ -51,7 +51,7 @@ def download(BUCKET_NAME,KEY):
     try:
         transfer = S3Transfer(boto3.client('s3','us-east-1')) 
         progress = ProgressPercentage_d(transfer._manager._client,BUCKET_NAME,KEY)
-        transfer.download_file(BUCKET_NAME,KEY, '../vmnt/tmp_videos/'+USEKEY,callback = progress)
+        transfer.download_file(BUCKET_NAME,KEY,tempdir+USEKEY,callback = progress)
     except botocore.exceptions.ClientError as e:
         if e.response['Error']['Code'] == "404":
             print("The object does not exist.")
@@ -64,10 +64,11 @@ def upload(BUCKET_NAME,FILENAME,FILEPATH,KEYPATH):
     try:
         transfer = S3Transfer(boto3.client('s3','us-east-1'))
         progress = ProgressPercentage_u(FILEPATH+FILENAME)
-        transfer.upload_file(FILENAME,BUCKET_NAME,KEYPATH,callback = progress)
+        transfer.upload_file(FILEPATH+FILENAME,BUCKET_NAME,KEYPATH,callback = progress)
 
     except OSError as e:
         print("The file does not exist.")
+        print(e)
 
 
 if __name__ == "__main__":

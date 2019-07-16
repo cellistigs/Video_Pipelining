@@ -18,11 +18,11 @@ if __name__ == "__main__":
     ## Only reupload analysis results:
     analysis_results = os.listdir(foldername)    
     for filename in analysis_results:
-        #if filename.split('.')[-1] == 'h5':
-        ## give the file the right key prefix: 
-        key = keypath+'/'+filename 
-        print(key,foldername+'/'+filename)
-        upload(bucket_name,filename,foldername+'/',key)
+        if filename.split('.')[-1] != 'mp4':
+            ## give the file the right key prefix: 
+            key = keypath+'/'+filename 
+            print(key,foldername+filename)
+            upload(bucket_name,filename,foldername,key)
 
 
 
