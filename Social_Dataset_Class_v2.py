@@ -625,7 +625,7 @@ class social_dataset(object):
         return compound
     ## Give a full ethogram that shows the activity of both mice, and shepherding
     ## events interspersed
-    def full_ethogram(self,save = False,show = True):
+    def full_ethogram(self,save = False,show = True,savepath = './'):
         ## First get the nest ethograms of each animal:
         in_nest = []
         for mouse in [0,1]:
@@ -644,7 +644,7 @@ class social_dataset(object):
         plt.legend()
         plt.tight_layout()
         if save == True:
-            plt.savefig(self.dataset_name.split('.')[0]+' Ethogram')
+            plt.savefig(savepath+self.dataset_name.split('.')[0]+'Ethogram.png')
 
         if show == True:
             plt.show()
