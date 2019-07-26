@@ -27,6 +27,7 @@ from moviepy.video.io.bindings import mplfig_to_npimage
 
 import tensorflow as tf
 
+from training_data.Training_Data_Class import training_dataset
 '''
 Some helper functions, to make geometric transformations, tensorflow dataset creation,
 indexing, index transformations, and interpolations
@@ -382,18 +383,19 @@ class social_dataset(object):
         # First define the relevant part indices:
         relevant_trajectories = self.render_trajectories(to_render = part_numbers)
         names = ['Virgin','Dam']
-        mouse_id = part_numbers[0]/5
+        mouse_id = part_numbers[0]//5
         if axes == True:
             fig,axes = plt.subplots()
             for part_nb,trajectory in enumerate(relevant_trajectories):
                 axes.plot(trajectory[start:end,0],-trajectory[start:end,1],label = self.part_list[part_numbers[part_nb]],**kwargs)
             axes.axis('equal')
             plt.legend()
-            plt.title(names[mouse_id]+' Trajectories')
+            print(mouse_id)
+            plt.title(names[int(mouse_id)]+' Trajectories')
 #             plt.yticks(0,[])
 #             plt.xticks(0,[])
             plt.show()
-            plt.close()
+            #plt.close()
             if save != False:
                 plt.savefig(save)
 
@@ -1536,6 +1538,12 @@ class social_dataset(object):
             self.allowed_index_full[indices[i]] = good_inds
 
     def classify_v4_ps(self,pindex,params):
+        '''
+        A method that takes in a set of parameters and a part index, and sorts trajectories as belonging to one of the animals or the other. 
+
+        
+
+        '''
 
         threshbound = 100+np.exp(params[0])
         T0 = params[1]
@@ -1709,9 +1717,223 @@ class social_dataset(object):
 
         return shell_array
 
+    def classify_ps_interval(pindex,params):
+        ## 0. Make this function take segdicts. 
+        ## 1. Use deques to keep track of the last (two) segment assignments in each mouse [check this, we might only need one]
+        ## 1.5 Make a function that calculates the overlapping index sets between the two last index sets. This overlapping set is 
+        ## what comparisons are done on.
+        ## 2. Take a function that accepts two segment ids, and spits out the distance between the end of the first and the start
+        ## of the second. 
+        ## 3. Wrap this in a function that simultaneously computes the self and cross distances as soon as that information is available. The distances correspond to difference with my own past, difference with the other's past, 
+        ## 4. Accept initialization. 
+        
+        threshbound = 100+np.exp(params[0])
+        T0 = params[1]
+        T1 = params[2]
+        T2 = params[3]
+        T3 = params[4]
+
+
+        mouse_nb = pindex/5
+        other_mouse = abs(mouse_nb-1)
+        other_pindex = int((other_mouse-mouse_nb)*5+pindex)
+        pindices = [pindex,other_pindex]
+        # Find trajectories:
+        trajectories = self.render_trajectories(pindices)
+        length = len(trajectories[0])
+        # Find segments:
+        self_good_indices = self.allowed_index_full[pindex][:,0]
+        other_good_indices = self.allowed_index_full[other_pindex][:,0]
+
+        ssegs = find_segments(self_good_indices)
+        osegs = find_segments(other_good_indices)
+
+        ## Have a state variable for both animals that says if we are in a trajectory or not, and which we are in
+        segs = [ssegs,osegs]
+
+        ssegind = 0
+        osegind = 0
+        seginds = np.array([ssegind,osegind])
+        sstart,send = ssegs[ssegind][0],ssegs[ssegind][-1]
+        ostart,oend = osegs[osegind][0],osegs[osegind][-1]
+
+        starts = np.array([sstart,ostart])
+        ends = np.array([send,oend])
+        labels = ['virgin','dam']
+
+        ## Initialize a shell array of nans:
+        shell_array = np.empty((self.dataset.shape[0],2))
+        shell_array[:] = np.nan
+
+        ## Initialize an array to keep track of when we're in the nest:
+        nest_array = np.zeros(self.dataset.shape[0],)
+
+        ## Keep track of last entry for both animals:
+        lastentries_hist = [[],[]]
+        for time in tqdm(range(length)):
+
+            ## until we exit the current interval, we track the start and end of the current interval:
+            timevec = np.repeat(time,2)
+            ## If we exit the segment:
+            if np.any(timevec == ends):
+
+                exits = np.where(timevec == ends)[0]
+
+                for exit_ind in exits:
+
+                    starts[exit_ind] = segs[exit_ind][seginds[exit_ind]][0]
+                    ends[exit_ind] = segs[exit_ind][seginds[exit_ind]][-1]
+
+            ## If we enter the next registered segment:
+            if np.any(timevec == starts):
+
+                enters = np.where(timevec == starts)[0]
+
+                for enter_ind in enters:
+                    ## Define a start and end for this trajectory:
+                    selfstart,selfend = segs[enter_ind][seginds[enter_ind]][0],segs[enter_ind][seginds[enter_ind]][-1]
+                    otherstart,otherend = segs[1-enter_ind][seginds[1-enter_ind]][0],segs[1-enter_ind][seginds[1-enter_ind]][-1]
+
+                    ## Grab the trajectory:
+                    segment = segment_getter(trajectories,segs,seginds[enter_ind],enter_ind)
+
+                    ## First compare to your own past:
+
+                    # Find difference with past trajectory:
+                    # Find last end:
+                    shell_column = shell_array[:,0+enter_ind:1+enter_ind]
+                    if np.all(np.isnan(shell_column)):
+                        last_entry = segment[0:1,:]
+                    else:
+                        last_entry_inds = np.where(~np.isnan(shell_column[:,0]))[0][-1:]
+                        last_entry_val = shell_column[np.where(~np.isnan(shell_column[:,0]))[0][-1:]]
+                        ## Indexing trickery:
+                        ind_choice = [1-enter_ind,enter_ind]
+                        ## Current
+                        curr_pindex = pindices[enter_ind]
+
+                        last_entry = trajectories[ind_choice[curr_pindex == last_entry_val[0][0]]][last_entry_inds,:]
+                    lastentries_hist[enter_ind] = last_entry
+
+                    histselfdifference = np.linalg.norm(last_entry-segment[0,:])
+
+                    if histselfdifference < threshbound:
+
+                        ###################################################################
+
+                        shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+
+                        ###################################################################
+                    # If it doesnt fit with the past, compare to mirroring trajectory:
+                    else:
+
+                        ## find indices that overlap with mirroring trajectory:
+                        maxstart,minend = np.max(starts),np.min(ends)
+
+                        if minend-maxstart <=0:
+                            pass ## If other trajectory not valid at the time
+
+                        else:
+                            self = trajectories[enter_ind][maxstart:minend,:]
+                            other = trajectories[1-enter_ind][maxstart:minend,:]
+
+                            # Find difference with other trajectory
+                            maxdifference = np.max(np.linalg.norm(self-other,axis = 1))
+                            histotherdifference = np.linalg.norm(last_entry-other[0,:])
+                            histcrossdifference = np.linalg.norm(lastentries_hist[1-enter_ind] - other[0,:])
+                            ## Three cases here:
+                            ## 1) Trajectory duplicates an already existing other trajectory:
+                            if histselfdifference > T0*maxdifference:
+
+                                pass ## We do not assign this segment to anyone, as it is already accounted for.
+                            ## 2) Trajectory has switched with the other trajectory:
+                            elif histselfdifference > T1*histotherdifference:
+
+                                if histcrossdifference > threshbound:
+
+                                    ###################################################################
+                                    shell_array[maxstart:minend,0+enter_ind:1+enter_ind] = pindices[1-enter_ind]
+                                    ## Additionally, if this trajectory is close to the other's ending point:
+                                    shell_array[maxstart:minend,0+1-enter_ind:1+1-enter_ind] = pindices[enter_ind]
+                                    ###################################################################
+                                else:
+                                    delay_interval = selfstart-last_entry_inds
+                                    if delay_interval > T2:
+                                        ###################################################################
+                                        shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+                                        ###################################################################
+                                    else:
+                                        pass
+                            ## 3) Everything is fine.
+                            else:
+
+                                ## Measure backwards from the current segment:
+                                delay_interval = selfstart-last_entry_inds
+
+                                if delay_interval > T3:
+                                    ###################################################################
+                                    shell_array[selfstart:selfend,0+enter_ind:1+enter_ind] = pindices[enter_ind]
+                                    ###################################################################
+                                else:
+                                    pass
+                                    # plt.plot(np.arange(minend-maxstart)+maxstart,self,'ro',label = labels[enter_ind])
+                                    # plt.plot(np.arange(minend-maxstart)+maxstart,other,'bo',label = labels[1-enter_ind])
+                                    # plt.plot(np.ones((1,2))*maxstart,last_entry,'g*',markersize = 5)
+                                    # plt.legend()
+                                    # plt.show()
+
+                ## We only want this to update if we're not at the last trajectory:
+                    if seginds[enter_ind]!= len(segs[enter_ind])-1:
+                        seginds[enter_ind] += 1
+    #         if time == length -1:
+
+
+    #             fig,ax = plt.subplots(2,1)
+    #             ax[0].plot(shell_array[:,0:1],label = 'virginx')
+    #             ax[0].plot(shell_array[:,2:3],label = 'damx')
+    #             ax[1].plot(shell_array[:,1:2],label = 'virginy')
+    #             ax[1].plot(shell_array[:,3:4],label = 'damy')
+    #             ax[0].legend()
+    #             ax[1].legend()
+    #             plt.show()
+
+        return shell_array
 
 ## Now make an end-user version that packages the above together. The only input
 ## we take will be the mouse statistics to compare against:
+
+## First make a segmentation function, because the output of only segmentation is also interesting: 
+    def segment_full(self,trainpath):
+        ## Import relevant training data statistics:
+        traindir = os.path.dirname(trainpath)
+        groundtruth = training_dataset(trainpath,traindir)
+        vstats,mstats = [groundtruth.stats_wholemouse([i+1 for i in range(100)],m) for m in range(2)]
+
+
+        partinds = [i for i in range(10)]
+        ## First reset everything for consistent behavior:
+        self.reset_filters(partinds)
+        ## Now apply velocity segmentation:
+        print('applying temporal segmentation')
+        self.filter_check_replace_p(partinds,
+                                    windowlength = 45,
+                                    varthresh = 38,
+                                    skip = 1)
+        ## Now apply part filters:
+        print('applying spatial segmentation')
+        self.filter_crosscheck_replaces_v2(partinds,vstats,mstats,thresh = [2,2])
+## 4/25/19: Try to replace all instaces of filter_full with filter_full_new! 
+    def filter_full_new(self,trainpath):
+
+        self.segment_full(trainpath)
+        ## Use parameters found through optimization:
+        print('applying matching and interpolation')
+        new_params = np.array([np.log(50),3.09,3.09,40.9,40.9]) ## Found by nelder-mead
+
+        ## Now apply classification, interpolation, etc to the result:
+        self.filter_classify_replaces_ps([i for i in range(5)],new_params)
+        print('done.')
+        
     def filter_full(self,vstats,mstats):
         partinds = [i for i in range(10)]
         ## First reset everything for consistent behavior:
