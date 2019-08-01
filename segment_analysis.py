@@ -7,17 +7,7 @@ import os
 import sys
 sys.path.insert(0,'../auxvolume/temp_videofolder')
 from config import xn,yn
-
-def filepaths(folderpath):
-    ## Look for all files that we should analyze within the folder: 
-    ## These will be distinguished by the name cropped_part*.mp4
-    all_files = os.listdir(folderpath)
-    data = [folderpath+'/'+fileset for fileset in all_files if fileset.split('.')[-1] == 'h5' and 'cropped_part' in fileset.split('.')[-2]]
-    return data 
-def moviepath(filepath):
-    relevant_part = filepath.split('DeepCut')[0]
-    movie_append = '.mp4'
-    return relevant_part+movie_append
+from Social_Dataset_utils import filepaths,moviepath
 
 if __name__ == '__main__':
     ## Load in the training data: 

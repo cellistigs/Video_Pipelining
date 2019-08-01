@@ -249,7 +249,7 @@ def find_first(array):
 ## We define a configuration class that holds a list of segment objects, and can test various manipulations of them, and calculate the resulting costs. As with individual segments, the configuration object has different "tiers" of configuration, starting with the base configuration (no touch) to query configuration that are just passed to the data for the sake of testing out a particular configuration. The configuration code for Configurations has one more flag compared to the Segment: -2 says, we are agnostic, reference the current underlying trajectory. 
 class Configuration(object):
     ## Lagrange multipliers are for the first and second penalty term when calculating the cost. 
-    def __init__(self,trajectory,time,mask,lagrange1=None,lagrange2=None,mweights=None,sweights=None):
+    def __init__(self,trajectory,time,mask,mweights=None,sweights=None):
         self.segs = data_framer(trajectory,time,mask) 
         self.nb_segs = len(self.segs)
         self.length = np.sum([seg.length for seg in self.segs])
@@ -264,16 +264,20 @@ class Configuration(object):
         self.all_times = time
 
         ## If lagrange1 is not given, we can use the optimal with some default parameter: 
-        if lagrange1 is None:
-            lagrange1 = self.lagrange1_fromdata(0.05)
-        if lagrange2 is None: 
-            lagrange2 = 0.05
-        self.weights = [lagrange1,lagrange2]
+        #if lagrange1 is None:
+        #    lagrange1 = self.lagrange1_fromdata(0.05)
+        #if lagrange2 is None: 
+        #    lagrange2 = 0.05
+        self.weights = [0,0]
         if mweights is None:
             self.mweights,self.sweights = self.lagrange_moving(N = int(self.length//10))
         else:
             self.mweights = mweights
             self.sweights = sweights
+
+        ## Also make block versions: 
+        self.mweights_block = np.array([np.nanmean(self.mweights[slice(*t)],axis =0) for t in self.all_times.astype(int)])
+        self.sweights_block = np.array([np.nanmean(self.sweights[slice(*t)],axis =0) for t in self.all_times.astype(int)])
 
     def check_config(self,config,start = None,end = None):
         assert len(config) == len(range(self.nb_segs)[start:end])
@@ -796,8 +800,8 @@ class Configuration(object):
         ## We would like an efficient way to count lengths: have an integer count of how many individuals designate a given part as invalid. 
         indicator = np.zeros(np.shape(config))
         indicator[np.where(config ==-1)] = 1
-        counts = np.sum(indicator,axis = 1)
-        costvec = self.lengths*counts*self.weights[0]
+        #counts = np.sum(indicator,axis = 1)
+        costvec = self.lengths[:,None]*indicator*self.mweights_block
         return np.sum(costvec)
 
     def full_nullcost_array(self,query=None,check = True):
@@ -812,7 +816,7 @@ class Configuration(object):
         ## We would like an efficient way to count lengths: have an integer count of how many individuals designate a given part as invalid. 
         indicator = np.zeros(np.shape(config))
         indicator[np.where(config ==-1)] = 1
-        costarray = self.lengths[:,None]*indicator*self.weights[0]
+        costarray = self.lengths[:,None]*indicator*self.mweights_block
         return costarray
     
     def split_nullcost(self,query=None,split = 0,check = True):
@@ -827,8 +831,8 @@ class Configuration(object):
         ## We would like an efficient way to count lengths: have an integer count of how many individuals designate a given part as invalid. 
         indicator = np.zeros(np.shape(config))
         indicator[np.where(config ==-1)] = 1
-        counts = np.sum(indicator,axis = 1)
-        costvec = self.lengths*counts*self.weights[0]
+        #counts = np.sum(indicator,axis = 1)
+        costvec = self.lengths[:,None]*indicator*self.mweights_block[start:end]
         return np.sum(costvec[:split]),np.sum(costvec[split:])
         
     def cut_nullcost(self,query=None,start=None,end=None,check = True):
@@ -843,8 +847,8 @@ class Configuration(object):
         ## We would like an efficient way to count lengths: have an integer count of how many individuals designate a given part as invalid. 
         indicator = np.zeros(np.shape(config))
         indicator[np.where(config ==-1)] = 1
-        counts = np.sum(indicator,axis = 1)
-        costvec = self.lengths[start:end]*counts*self.weights[0]
+        #counts = np.sum(indicator+axis = 1)
+        costvec = self.lengths[start:end,None]*indicator*self.mweights_block[start:end]
         return np.sum(costvec)
 
     def full_switchcost(self,query=None,check = True):
@@ -1697,6 +1701,9 @@ class Optimizer(object):
                 self.solutions.append(node)
                 ## Also have a query that corresponds to the current best solution
                 self.boundquery = self.s2q(node.signature)
+                if self.sort == 'Priority':
+                    self.current_nodes = []
+                    print('found solution')
         else:
             for n,node in enumerate(candidates):
                 l = len(candidates[0].signature)
