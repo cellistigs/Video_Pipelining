@@ -9,7 +9,6 @@ sys.path.insert(0,'../auxvolume/temp_videofolder')
 from config import xn,yn
 from Social_Dataset_utils import filepaths,moviepath
 
-
 if __name__ == '__main__':
     ## Load in the training data: 
     trainingdatapath = "../DeepLabCut/pose-tensorflow/models/UnaugmentedDataSet_social_v3Nov2/data-social_v3/"
