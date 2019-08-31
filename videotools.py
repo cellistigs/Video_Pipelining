@@ -13,13 +13,13 @@ import yaml
 
 ## Code written on 8/30. 
 ## Write a function object to be a single worker to which you can farm out jobs intelligently. An unfortunate consequence of moviepy processing is that VideoFileClips cannot be passed to child processes via multiprocessing, so we must pass references and load the video in each thread. If possible we should extract full clips and then throw away all full clips in each thread. 
-def distribute_render(configpath,dirpath,length = 1200,threads = 4,ending= 'mpg'): 
+def distribute_render(configpath,dirpath,length = 2400,threads = 4,ending= 'mpg'): 
     # First get all videos:
     files = os.listdir(dirpath)
     videos = [video for video in files if video.split('.')[-1] == ending]
     #Get configuration file for space:
     y = yaml.load(open(configpath))
-    boxcoords = [y['coordinates']['box{}'.format(i)] for i in range(4)]
+    boxcoords = [y['coordinates']['box{}'.format(i)] for i in range(len(y['coordinates']))]
     
     ## Iterate through videos and collect necessary info: 
     for videopath in videos:
@@ -30,7 +30,7 @@ def distribute_render(configpath,dirpath,length = 1200,threads = 4,ending= 'mpg'
         # If analysis has been found:
         all_dicts = []
         ident_base = videopath.split('.'+ending)[0]
-        for ci in range(4):
+        for ci in range(len(y['coordinates'])):
             ident =  ident_base+'roi_'+str(ci)+'cropped_'+'part'
             done = [int(re.findall('\d+',part.split('.')[0])[-1]) for part in files if ident in part.split('.')[0]]
             presegs = range(np.ceil(seconds/length).astype(int))
@@ -86,7 +86,7 @@ def render_queue(queue,videopath,namebase):
         cropped_cutout = cropped.subclip(t_start = tempval[0],t_end = tempval[1])
         #ident =  videoname.split('.'+ending)[0]+'roi_'+str(ci)+'cropped_'+'part'
         name = namebase+'roi_'+str(spatkey)+'cropped_part'+str(tempkey)+'.mp4'
-        cropped_cutout.write_videofile(name,codec = 'mpeg4',bitrate = "1500k",threads = 4,logger = None)
+        cropped_cutout.write_videofile(name,codec = 'mpeg4',bitrate = "1500k",threads = 4)
         print('writing'+str(i))
 
         
