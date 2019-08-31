@@ -3,8 +3,312 @@ from tqdm import tqdm
 from moviepy.editor import VideoFileClip
 import matplotlib.pyplot as plt
 import numpy as np
+import multiprocessing
 import sys
+import re
+import os
+import gc
 from scipy.signal import medfilt
+import yaml
+
+## Code written on 8/30. 
+## Write a function object to be a single worker to which you can farm out jobs intelligently. An unfortunate consequence of moviepy processing is that VideoFileClips cannot be passed to child processes via multiprocessing, so we must pass references and load the video in each thread. If possible we should extract full clips and then throw away all full clips in each thread. 
+def distribute_render(configpath,dirpath,length = 1200,threads = 4,ending= 'mpg'): 
+    # First get all videos:
+    files = os.listdir(dirpath)
+    videos = [video for video in files if video.split('.')[-1] == ending]
+    #Get configuration file for space:
+    y = yaml.load(open(configpath))
+    boxcoords = [y['coordinates']['box{}'.format(i)] for i in range(4)]
+    
+    ## Iterate through videos and collect necessary info: 
+    for videopath in videos:
+        ## We unfortunately have to load the clip one time in the main loop:
+        clip = VideoFileClip(os.path.join(dirpath,videopath))
+        ## First get the duration in seconds:
+        seconds = clip.duration
+        # If analysis has been found:
+        all_dicts = []
+        ident_base = videopath.split('.'+ending)[0]
+        for ci in range(4):
+            ident =  ident_base+'roi_'+str(ci)+'cropped_'+'part'
+            done = [int(re.findall('\d+',part.split('.')[0])[-1]) for part in files if ident in part.split('.')[0]]
+            presegs = range(np.ceil(seconds/length).astype(int))
+            if len([part for part in files if ident in part.split('.')[0]]):
+                segments = [segment for segment in presegs if segment not in done]
+            else:
+                segments = presegs 
+            ## The end segment is special:
+            endseg = presegs[-1]
+            tempdicts = []
+            ## Now iterate through segments and recover lengths: 
+            for segment in segments:
+                if segment == endseg: # corner case for the last video segment. 
+                    endind = -1
+                else:
+                    endind = length*(segment+1)
+                tempdicts.append({'key':segment,'value':[segment*length,endind]})
+            spatdict = {'key':ci,'value':[boxcoords[ci][ind] for ind in ['x0','x1','y0','y1']]}
+            roi_dicts = [{'spatial':spatdict,'temporal':tempdict} for tempdict in tempdicts]
+            all_dicts = all_dicts+ roi_dicts
+
+        ## This returns threads different queues that parametrize jobs to be completed. 
+        dicts_split = index_segments(all_dicts,threads)
+
+        p = multiprocessing.Pool()
+        ## We need to make a function object to get around the lack of lambda compatibility with multiprocessing: 
+        p.map(RenderWorker(os.path.join(dirpath,videopath),os.path.join(dirpath,ident_base)),dicts_split)
+
+class RenderWorker(object):
+    def __init__(self,videopath,namebase):
+        self.videopath = videopath
+        self.namebase = namebase
+
+    def __call__(self,queue):
+        render_queue(queue,self.videopath,self.namebase)
+
+def render_queue(queue,videopath,namebase):
+    ## This function loads the video into memory, clips out relevant chunks, and then renders each.  
+    clipqueue = []
+    clip = VideoFileClip(videopath)
+    basetitle = videopath.split('.')
+    for i,loc in enumerate(queue):
+        print('prepping' +str(i))
+        ## get the spatial and temporal locations referred to here. 
+        ## Spatial and temporal data passed as a dict seen in the notebook you have. 
+        spatfield = loc['spatial'] ## a list with four elements, denoting boundaries in pixel space. 
+        spatkey = spatfield['key']
+        spatval = spatfield['value']
+        tempfield = loc['temporal'] ## an list with two elements, giving the start and end time boundaries in seconds.  
+        tempkey = tempfield['key']
+        tempval = tempfield['value']
+        cropped = clip.crop(x1 = spatval[0],y1 = spatval[1],x2 = spatval[2], y2 = spatval[3])
+        cropped_cutout = cropped.subclip(t_start = tempval[0],t_end = tempval[1])
+        #ident =  videoname.split('.'+ending)[0]+'roi_'+str(ci)+'cropped_'+'part'
+        name = namebase+'roi_'+str(spatkey)+'cropped_part'+str(tempkey)+'.mp4'
+        cropped_cutout.write_videofile(name,codec = 'mpeg4',bitrate = "1500k",threads = 4,logger = None)
+        print('writing'+str(i))
+
+        
+
+        
+
+        ## queue is a set of processing chunks that the video is responsible for. It is organized as a set of tuples indicating the spatial and temporal cropping that should be handled as individual units by each thread. 
+
+
+
+## Original version of write_cropped_video function. loads in video here. 
+def write_cropped_video(cwd,video,interval,length,end): 
+    clip = VideoFileClip(cwd+'/'+video)
+    try:
+        with open(cwd+'/'+'config.py','r+') as f:
+            coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
+            intcoords = []
+            for coord in range(len(coords)):
+                coords[coord] = f.readline()
+                nums = re.findall('\d+',coords[coord])[1]
+                intcoords.append(nums)
+
+        print(video.split('.')[0]+'cropped.avi')
+        cropped = clip.crop(x1 = intcoords[0],y1 = intcoords[1],x2 = intcoords[2],y2 = intcoords[3])
+        ## We want to split our video into manageable segments.
+        ## Account for the case that our video analysis failed somewhere in the middle:
+        # We want to be able to extract out the things that have been done so far:
+
+        for segment in interval:
+            print('moving to '+str(segment)+' of '+str(interval))
+            try:
+                # ensures that the last clip is the right length
+                if segment == end: # corner case for the last video segment. 
+
+                    endseg = -1
+                else:
+                    endseg = length*(segment+1)
+                cropped_cutout = cropped.subclip(t_start = segment*length,t_end = endseg)
+                cropped_cutout.write_videofile(cwd+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment)+ '.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 2,logger = None)
+
+            except OSError as e:
+                print('segment not viable')
+            gc.collect()
+    except OSError as e:
+
+         print(e.errno)
+         print('configuration not loaded')
+
+def write_cropped_video_new(cliplist,basetitle,segments):
+    for si,segment in enumerate(segments):
+        print(basetitle+str(segment)+'.mp4')
+        cliplist[si].write_videofile(basetitle+str(segment)+'.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 4)
+        #cropped_cutout.write_videofile(cwd+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment)+ '.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 2,logger = None)
+# No lambda functions are allowed in parallelized code, so we will use a function object instead. 
+class Renderer(object):
+    def __init__(self,cwd,video,length,end):
+        self.cwd = cwd 
+        self.video = video
+        self.length = length
+        self.end = end
+    def __call__(self,segments):
+        write_cropped_video(self.cwd,self.video,segments,self.length,self.end)
+
+# New renderer class. Takes in a list of clips (is this prohibitive?) and a base title. Call method takes the segment indices as a generator.) 
+class Renderer_new(object):
+    def __init__(self,cliplist,basetitle):
+        self.cliplist = cliplist 
+        self.basetitle = basetitle
+    def __call__(self,segments):
+        write_cropped_video_new(self.cliplist,self.basetitle,self.segments)
+
+# helper function for parallelization: 
+def index_segments(segments,vcpus):
+    nb_partition = np.max((np.ceil(len(segments)/vcpus).astype(int),1))
+    list_parts  = [segments[i*nb_partition:(i+1)*nb_partition] for i in range((len(segments)+nb_partition-1)//nb_partition)]
+    return list_parts
+
+## Crop a certain portion of the video
+def crop_video(configpath,clip):
+    y = yaml.load(open(configpath))
+    ## Get coordinates: 
+    coords = y['coordinates']
+    basebox = 'box{}'
+    clips = []
+    for i in range(len(coords)):
+        boxname = basebox.format(str(i))
+        boxcoords = coords[boxname]
+        cropped = clip.crop(x1 = boxcoords['x0'],x2 = boxcoords['x1'],y1 = boxcoords['y0'],y2 = boxcoords['y1'])
+        clips.append(cropped)
+    return clips
+
+## Write a function that chops up a clip into parts indexed by the segment and the end segment index. 
+def cut_clip_segments(cropped,segments,endseg,length):
+    all_clips = []
+    for segment in segments:
+        print('moving to '+str(segment))
+        try:
+            # ensures that the last clip is the right length
+            if segment == endseg: # corner case for the last video segment. 
+                endind = -1
+            else:
+                endind = length*(segment+1)
+            cropped_cutout = cropped.subclip(t_start = segment*length,t_end = endind)
+            all_clips.append(cropped_cutout)
+        except OSError as e:
+            print('segment not viable')
+        gc.collect()
+    return all_clips
+
+## Write a wrapper function that takes a bunch of clips, a set of indices, a base title, and writes the clip.  
+
+## Newest method to cut videos as of 8/29.
+## Assumes that there is more than one ROI in the frame, and iterates over each roi as an independent clip. 
+def cut_videos_new(configpath,dirpath,length = 1200,threads = 4,ending= 'mpg'):
+    """
+    configpath: the path to the config file.  
+    dirpath: the path to the directory we want to use. 
+    length: the length of the resulting clips in seconds. 
+    threads: the number of threads to use for processing. 
+    """
+    # First get all videos:
+    files = os.listdir(dirpath)
+    videos = [video for video in files if video.split('.')[-1] == ending]
+    for videoname in videos:
+        ## Load in the video: 
+        clip = VideoFileClip(os.path.join(dirpath,videoname))
+        ## Now crop it according to the configpath: 
+        croppedlist = crop_video(configpath,clip)
+        print(videoname,croppedlist)
+        ## Now for each of the cropped videos, we will look at the motion energy in each: 
+        for ci,cropclip in enumerate(croppedlist):
+            ## First get the duration in seconds:
+            seconds = clip.duration
+            # If analysis has been found:
+            ident =  videoname.split('.'+ending)[0]+'roi_'+str(ci)+'cropped_'+'part'
+            done = [int(re.findall('\d+',part.split('.')[0])[-1]) for part in files if ident in part.split('.')[0]]
+            presegs = range(np.ceil(seconds/length).astype(int))
+            if len([part for part in files if ident in part.split('.')[0]]):
+                segments = [segment for segment in presegs if segment not in done]
+            else:
+                segments = presegs 
+            ## explicitly save the last segment index. 
+            endseg = presegs[-1]
+            ## Iterate through segment indices and cut up the video accordingly: 
+            clipsegs = cut_clip_segments(cropclip,segments,endseg,length)
+             
+            # This determines how we will split our resources: 
+            segments_split = index_segments(segments,threads)
+
+            print(segments)
+            #write_cropped_video_new(clipsegs,os.path.join(dirpath,ident),segments)
+            print('Parallelizing video processing into '+str(len(segments_split))+' different threads')
+            p = multiprocessing.Pool()
+            ### We need to make a function object to get around the lack of lambda compatibility with multiprocessing: 
+            p.map(Renderer_new(clipsegs,os.path.join(dirpath,ident)),segments_split)
+            #print('Done')
+
+            ## Now we will distribute computation over the 4 virtual threads and 
+            # now generate splits:
+            #print(list(segments_split[0]))
+            # Chunk the video: 
+
+            ## Now we will write cropped files:  
+            print(segments_split)
+            #print('Parallelizing video processing into '+str(len(segments_split))+' different threads')
+            #p = multiprocessing.Pool()
+
+
+        
+
+    
+
+
+def cut_videos_p(configpath,cwd = None):
+    # length in seconds of each video 
+    length = 1200
+    threads = 4
+    if cwd is None:
+        # First get current directory
+        cwd = os.getcwd()
+    # First get all subdirectories:
+    files = os.listdir(cwd)
+    videos = [video for video in files if video.split('.')[-1] == 'avi']
+    print(videos)
+    for video in videos:
+        ## Load in video
+        print('loading ' +video)
+        clip = VideoFileClip(cwd+'/'+video)
+        try: 
+            with open(configpath,'r+') as f:
+                coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
+                intcoords = []
+                for coord in range(len(coords)):
+                    coords[coord] = f.readline()
+                    nums = re.findall('\d+',coords[coord])[1]
+                    intcoords.append(nums)
+            
+
+        except OSError as e: 
+            print(e.errno)
+            print('configuration not loaded')
+        
+        ## First get the duration in seconds:
+        seconds = clip.duration
+        # If analysis has been found:
+        ident =  video.split('.')[0]+'cropped_'+'part'
+        print(files,ident)
+        print([part for part in files if ident in part.split('.')[0]])
+        done = [int(re.findall('\d+',part.split('.')[0])[-1]) for part in files if ident in part.split('.')[0]]
+        presegs = range(np.ceil(seconds/length).astype(int))
+        if len([part for part in files if ident in part.split('.')[0]]):
+            segments = [segment for segment in presegs if segment not in done]
+        else:
+            segments = presegs 
+        # This determines how we will split our resources: 
+        segments_split = index_segments(segments,threads)
+        print('Parallelizing video processing into '+str(len(segments_split))+' different threads')
+        p = multiprocessing.Pool()
+        ## We need to make a function object to get around the lack of lambda compatibility with multiprocessing: 
+        p.map(Renderer(cwd,video,length,presegs[-1]),segments_split)
+        print('Done')
+
 
 ## Normalize frame for visualization
 def normframe(frame):
@@ -221,6 +525,10 @@ def clip_filter_v2(clip,energy,m,n):
     filtered = subcliped.fl(framefunc)
 
     return filtered,all_templates
+
+
+
+
 
 if __name__ == "__main__":
     clippath = sys.argv[1]
