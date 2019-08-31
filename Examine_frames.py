@@ -53,7 +53,7 @@ def crop_videos(cwd = None):
     # First get all subdirectories:
     print(cwd)
     all_sub = next(os.walk(cwd))[1]
-    print(all_sub)
+    print(all_sub[5:])
     all_sub = all_sub
     for sub in all_sub:
         files = os.listdir(cwd+'/'+sub)
@@ -63,9 +63,12 @@ def crop_videos(cwd = None):
         for video in videos:
             ## Load in cropped version of
             print('loading ' +video)
-            clip = VideoFileClip(cwd+'/'+sub+'/'+video)
+            #clip = VideoFileClip(cwd+'/'+sub+'/'+video)
+            print(cwd,sub)
+            clip = VideoFileClip(cwd+'/'+sub+"/"+video)
+            print('IT LOAEDED')
             try:
-                with open(cwd+'/'+sub+'/'+video.split('.')[0]+'config.py','r+') as f:
+                with open(cwd+'/'+sub+"/"+video.split('.')[0]+'config.py','r+') as f:
                     coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
                     intcoords = []
                     for coord in range(len(coords)):
@@ -94,8 +97,8 @@ def crop_videos(cwd = None):
                     print(segments)
 
                 else:
-
                     segments = range(np.ceil(seconds/length).astype(int)) # rounds up to give the number of distinct segments we need
+                    presegs = segments
                 for segment in segments:
                     try:
                         # Ensures that the last clip is the right length

@@ -1,0 +1,39 @@
+## A log of the Branch and Bound project. 
+
+## 6/9/2019:
+Wrote a SwitchCircle Test object that calculates costs analytically. 
+
+## 6/11/2019:
+Implemented and tested new Segment object class as the fundamental element to work with our data. 
+
+## 6/13/2019: 
+Implemented and tested the new Configuration object class to handle different segment configurations, and calculate costs on them efficiently. 
+
+## 6/15/2019:
+Implemented the Optimizer object class to take steps on the branch and bound algorithm.
+
+## 6/17/2019: 
+First runs with new object class. We are still running into some of the same problems as in our first instantiation- cases where the cost does not converge, variance of the cost is too high when estimated with distances. 
+
+## 6/18/2019: 
+Checked feasability of the cost function: at the groundtruth, we are at a local optimum. The path from the working start configuration to the groundtruth is of strictly decreasing cost. 
+
+## 6/21/2019:
+New cost estimation idea: try and come up with a lower bound by ignoring inter_segment reality, replacing distances with optimistic estimates. 
+
+## 6/23/2019: 
+Implemented new cost estimate, accessed easily and quickly. 
+Current speed benchmark: 1 step = 127 ms
+
+## 6/24/2019: 
+Attached costs to individual nodes, so that cost calculation is only differential. Eliminates scaling with length of underlying trajectory. 
+Current speed benchmark: 1 step = 70 ms
+## 6/25/2019:
+Implemented speedups in get_inter, get intra functions. Configurations are more easy to convert into indices for these constructions than previously thought; lead to fast improvements. 
+Current speed benchmark: 1 step = 50 ms
+
+## 6/25/2019: 
+Rewrote all costs as indexing. Still seems to be some scaling with depth. 
+Current speed benchmark 1 step (at beginning of trajectory) = 4 ms. 70 nodes in: 12 ms 
+Seem to be issues with updating the cost efficiently: do some visualization, and examine what's really going on. 
+
