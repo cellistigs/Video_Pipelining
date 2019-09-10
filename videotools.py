@@ -12,6 +12,7 @@ from scipy.signal import medfilt
 import yaml
 
 ## Code written on 8/30. 
+## Code revised on 9/9
 ## Write a function object to be a single worker to which you can farm out jobs intelligently. An unfortunate consequence of moviepy processing is that VideoFileClips cannot be passed to child processes via multiprocessing, so we must pass references and load the video in each thread. If possible we should extract full clips and then throw away all full clips in each thread. 
 def distribute_render(configpath,dirpath,length = 2400,threads = 4,ending= 'mpg'): 
     # First get all videos:
@@ -58,6 +59,8 @@ def distribute_render(configpath,dirpath,length = 2400,threads = 4,ending= 'mpg'
         p = multiprocessing.Pool()
         ## We need to make a function object to get around the lack of lambda compatibility with multiprocessing: 
         p.map(RenderWorker(os.path.join(dirpath,videopath),os.path.join(dirpath,ident_base)),dicts_split)
+        p.close()
+        p.join()
 
 class RenderWorker(object):
     def __init__(self,videopath,namebase):
@@ -82,12 +85,13 @@ def render_queue(queue,videopath,namebase):
         tempfield = loc['temporal'] ## an list with two elements, giving the start and end time boundaries in seconds.  
         tempkey = tempfield['key']
         tempval = tempfield['value']
-        cropped = clip.crop(x1 = spatval[0],y1 = spatval[1],x2 = spatval[2], y2 = spatval[3])
+        print(tempval,spatval,'spatial and temporal boundaries')
+        cropped = clip.crop(x1 = spatval[0],y1 = spatval[2],x2 = spatval[1], y2 = spatval[3])
         cropped_cutout = cropped.subclip(t_start = tempval[0],t_end = tempval[1])
+        print(cropped_cutout.size,cropped_cutout.duration)
         #ident =  videoname.split('.'+ending)[0]+'roi_'+str(ci)+'cropped_'+'part'
         name = namebase+'roi_'+str(spatkey)+'cropped_part'+str(tempkey)+'.mp4'
-        cropped_cutout.write_videofile(name,codec = 'mpeg4',bitrate = "1500k",threads = 2)
-        print('writing'+str(i),loc)
+        cropped_cutout.write_videofile(name,codec = 'mpeg4',bitrate = "1500k",threads = 2,progress_bar = True)
 
         
 
@@ -125,7 +129,7 @@ def write_cropped_video(cwd,video,interval,length,end):
                 else:
                     endseg = length*(segment+1)
                 cropped_cutout = cropped.subclip(t_start = segment*length,t_end = endseg)
-                cropped_cutout.write_videofile(cwd+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment)+ '.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 2,logger = None)
+                cropped_cutout.write_videofile(cwd+'/'+video.split('.')[0]+'cropped_'+'part' +str(segment)+ '.mp4',codec = 'mpeg4',bitrate = "1500k",threads = 1,progress_bar = False)
 
             except OSError as e:
                 print('segment not viable')
@@ -242,6 +246,9 @@ def cut_videos_new(configpath,dirpath,length = 1200,threads = 4,ending= 'mpg'):
             p = multiprocessing.Pool()
             ### We need to make a function object to get around the lack of lambda compatibility with multiprocessing: 
             p.map(Renderer_new(clipsegs,os.path.join(dirpath,ident)),segments_split)
+
+            p.close()
+            p.join()
             #print('Done')
 
             ## Now we will distribute computation over the 4 virtual threads and 
