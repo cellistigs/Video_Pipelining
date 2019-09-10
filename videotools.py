@@ -73,7 +73,7 @@ def render_queue(queue,videopath,namebase):
     clip = VideoFileClip(videopath)
     basetitle = videopath.split('.')
     for i,loc in enumerate(queue):
-        print('prepping' +str(i))
+        print('prepping' +str(i),loc)
         ## get the spatial and temporal locations referred to here. 
         ## Spatial and temporal data passed as a dict seen in the notebook you have. 
         spatfield = loc['spatial'] ## a list with four elements, denoting boundaries in pixel space. 
@@ -86,8 +86,8 @@ def render_queue(queue,videopath,namebase):
         cropped_cutout = cropped.subclip(t_start = tempval[0],t_end = tempval[1])
         #ident =  videoname.split('.'+ending)[0]+'roi_'+str(ci)+'cropped_'+'part'
         name = namebase+'roi_'+str(spatkey)+'cropped_part'+str(tempkey)+'.mp4'
-        cropped_cutout.write_videofile(name,codec = 'mpeg4',bitrate = "1500k",threads = 4)
-        print('writing'+str(i))
+        cropped_cutout.write_videofile(name,codec = 'mpeg4',bitrate = "1500k",threads = 2)
+        print('writing'+str(i),loc)
 
         
 

@@ -1,5 +1,7 @@
 import sys
 import os
+import csv
+import numpy as np
 from Social_Dataset_Class_v2 import social_dataset
 from training_data.Training_Data_Class import training_dataset
 import joblib
@@ -23,7 +25,9 @@ if __name__ == "__main__":
         joblib.dump(trajectories,os.path.join(savedirectory,name+'raw'))
         social_obj.filter_full(vstats,mstats)
         filttrajectories = social_obj.render_trajectories(to_render = [0,1,2,3,4,5,6,7,8,9])
-        joblib.dump(trajectories,os.path.join(savedirectory,name+'filt'))
+        filttrajectories_full = np.concatenate(filttrajectories,axis = 1)
+        np.savetxt(os.path.join(savedirectory,name+"filt"),filttrajectories_full,delimiter = ',')     
+        #joblib.dump(trajectories,os.path.join(savedirectory,name+'filt'))
         #social_obj.full_ethogram(save = True,show = False,savepath = name+'/')
       
         
