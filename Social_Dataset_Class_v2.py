@@ -73,6 +73,24 @@ def angle_between_vec(v1, v2):
     dotted = np.einsum('ik,ik->i', v1_u, v2_u)
     return np.arccos(np.clip(dotted, -1.0, 1.0))
 
+def within_bb(points,bounds):
+    """
+    Checks if the given point is within the given bounds. Written in 2-d.
+    Inputs: 
+    points (array): A (-1,2) shaped array that gives the point to be queried.
+    bounds (dict): A four element dictionary with keys xn0, xn1, yn0, yn1 that give the bounding box for the nest.
+    """
+    assert len(points.shape) == 2, "Accepts 2d arrays right now."
+    assert points.shape[1] == 2, "Accepts 2d data right now."
+    xcheck = np.logical_and(bounds["xn0"]<points[:,0],points[:,0]<bounds["xn1"])
+    ycheck = np.logical_and(bounds["yn0"]<points[:,1],points[:,1]<bounds["yn1"])
+    return np.logical_and(xcheck,ycheck)
+
+    #xcheck = (out[:,0]<self.bounds[0])
+    #ycheck = (out[:,1]<self.bounds[1])
+    
+
+
 ## Tensorflow Data API helper functions:
 ## Designate helper function to define features for examples more easily
 def _int64_feature_(value):
@@ -534,7 +552,11 @@ class social_dataset(object):
 
         self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
 
+    
     def filter_nests(self):
+        fixed = False
+        ## TODO: use within_bb to reformat this. 
+        assert fixed == True
         try:
             print("nest bounds are: "+str(self.bounds))
             indices = np.array([0,1,2,3,4])
@@ -2375,6 +2397,41 @@ class social_dataset(object):
 class social_dataset_online(social_dataset):
     def newmethod():
         print('I exist')
+
+    def set_nest(self,bounds):
+        """
+        Sets the bounds for the nest box. Uses same bounding box parametrization as the cropping.   
+
+        Inputs: 
+        bounds (dict): A dictionary giving the four coordinates defining the bounding box for the nest. The keys for this dictionary are {xn0,xn1,yn0,yn1}, with increasing indices indicating left to right, top to bottom indexing.  
+        """
+        ## Sanitize: 
+        gt_nestcoords = ["xn0","xn1","yn0","yn1"]
+        assert np.all([key in gt_nestcoords for key in bounds.keys()]), "dictionary keys must be in {}".format(str(gt_nextcoords))
+        assert np.all(gt_key in bounds.keys for gt_key in gt_nestcoords), "all keys required must be in present"
+        assert len(bounds.keys()) == 4, 'must have appropriate number of coordinates.'
+        self.bounds = bounds
+
+    def nest_ethogram(self,mouse):
+        """
+        Converts trace of a given mouse into a boolean vector giving True when the mouse is in the nest and False when elsewhere.
+        Inputs:
+        mouse (int): 0 -> virgin should be analyzed, 1 -> dam should be analyzed.
+        Outputs:
+        (array): boolean array giving the state of (mouse) as a boolean for every time point.  
+        
+
+        """
+        try:
+            nest_location = self.bounds
+            ## retrieve trajectory:
+            out = self.render_trajectories([mouse*5+3])[0]
+            in_nest = within_bb(out,nest_location) 
+        except AttributeError as error:
+            print(error)
+            print("must set nest bounds via set_nest method")
+
+        return in_nest
 
     def adjacency_matrix_fast(self,frames,vstats,mstats,thresh = [2,7]):
         ## Iterate through the parts of each mouse pairwise, and
