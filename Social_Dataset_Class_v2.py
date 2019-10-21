@@ -27,7 +27,10 @@ from moviepy.video.io.bindings import mplfig_to_npimage
 
 import tensorflow as tf
 
+from collections import deque
+
 from training_data.Training_Data_Class import training_dataset
+
 '''
 Some helper functions, to make geometric transformations, tensorflow dataset creation,
 indexing, index transformations, and interpolations
@@ -69,6 +72,24 @@ def angle_between_vec(v1, v2):
     v2_u = unit_vector_vec(v2)
     dotted = np.einsum('ik,ik->i', v1_u, v2_u)
     return np.arccos(np.clip(dotted, -1.0, 1.0))
+
+def within_bb(points,bounds):
+    """
+    Checks if the given point is within the given bounds. Written in 2-d.
+    Inputs: 
+    points (array): A (-1,2) shaped array that gives the point to be queried.
+    bounds (dict): A four element dictionary with keys xn0, xn1, yn0, yn1 that give the bounding box for the nest.
+    """
+    assert len(points.shape) == 2, "Accepts 2d arrays right now."
+    assert points.shape[1] == 2, "Accepts 2d data right now."
+    xcheck = np.logical_and(bounds["xn0"]<points[:,0],points[:,0]<bounds["xn1"])
+    ycheck = np.logical_and(bounds["yn0"]<points[:,1],points[:,1]<bounds["yn1"])
+    return np.logical_and(xcheck,ycheck)
+
+    #xcheck = (out[:,0]<self.bounds[0])
+    #ycheck = (out[:,1]<self.bounds[1])
+    
+
 
 ## Tensorflow Data API helper functions:
 ## Designate helper function to define features for examples more easily
@@ -380,6 +401,10 @@ class social_dataset(object):
 
 
     def plot_trajectory(self,part_numbers,start = 0,end = -1,cropx = 0,cropy = 0,axes = True,save = False,**kwargs):
+        """
+        Inputs: 
+        part_numbers:(list) a list of the part numbers that you want to plot. 0-4 are virgin, 5-9 are dam. Order is snout, left ear, right ear, centroid, tailbase. 
+        """
         # First define the relevant part indices:
         relevant_trajectories = self.render_trajectories(to_render = part_numbers)
         names = ['Virgin','Dam']
@@ -527,7 +552,11 @@ class social_dataset(object):
 
         self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
 
+    
     def filter_nests(self):
+        fixed = False
+        ## TODO: use within_bb to reformat this. 
+        assert fixed == True
         try:
             print("nest bounds are: "+str(self.bounds))
             indices = np.array([0,1,2,3,4])
@@ -844,7 +873,7 @@ class social_dataset(object):
         traj_ref = reference
         traj_test = target
 
-        traj_ref_sample = traj_ref[[start_rel_ref-1,start_rel_ref,end_rel_ref,end_rel_ref+1],:]
+        traj_ref_sample = traj_ref[[start_rel_ref-1,start_rel_ref,end_rel_ref-1,end_rel_ref],:]
 
         ## Create interpolation function:
         f = interp1d(sample_indices_rel,traj_ref_sample,axis = 0,kind = 'cubic')
@@ -1320,6 +1349,7 @@ class social_dataset(object):
         if indices is None:
             indices = self.time_index
         confusion = self.filter_crosscheck_v2(vstats,mstats,thresh,indices)
+        print(confusion.shape)
 
         for p,part in enumerate(parts):
             pconfusion = indices[np.where(confusion[:,part] <0)[0]]
@@ -1391,7 +1421,7 @@ class social_dataset(object):
 
         scores = np.zeros((len(target),len(pindices)))
 
-        compare_max = len(target_indices)-windowlength-2
+        compare_max = len(target_indices)-windowlength-1
         for i in tqdm(range(compare_max)[::skip]):
 
             current_vars = []
@@ -1539,9 +1569,9 @@ class social_dataset(object):
 
     def classify_v4_ps(self,pindex,params):
         '''
-        A method that takes in a set of parameters and a part index, and sorts trajectories as belonging to one of the animals or the other. 
+        A method that takes in a set of parameters and a part index, and sorts trajectories as belonging to one of the animals or the other.
 
-        
+
 
         '''
 
@@ -1636,6 +1666,7 @@ class social_dataset(object):
                     histselfdifference = np.linalg.norm(last_entry-segment[0,:])
 
                     if histselfdifference < threshbound:
+                    ## If it looks close enough to what you left off with, accept. 
 
                         ###################################################################
 
@@ -1718,15 +1749,15 @@ class social_dataset(object):
         return shell_array
 
     def classify_ps_interval(pindex,params):
-        ## 0. Make this function take segdicts. 
+        ## 0. Make this function take segdicts.
         ## 1. Use deques to keep track of the last (two) segment assignments in each mouse [check this, we might only need one]
-        ## 1.5 Make a function that calculates the overlapping index sets between the two last index sets. This overlapping set is 
+        ## 1.5 Make a function that calculates the overlapping index sets between the two last index sets. This overlapping set is
         ## what comparisons are done on.
         ## 2. Take a function that accepts two segment ids, and spits out the distance between the end of the first and the start
-        ## of the second. 
-        ## 3. Wrap this in a function that simultaneously computes the self and cross distances as soon as that information is available. The distances correspond to difference with my own past, difference with the other's past, 
-        ## 4. Accept initialization. 
-        
+        ## of the second.
+        ## 3. Wrap this in a function that simultaneously computes the self and cross distances as soon as that information is available. The distances correspond to difference with my own past, difference with the other's past,
+        ## 4. Accept initialization.
+
         threshbound = 100+np.exp(params[0])
         T0 = params[1]
         T1 = params[2]
@@ -1902,7 +1933,7 @@ class social_dataset(object):
 ## Now make an end-user version that packages the above together. The only input
 ## we take will be the mouse statistics to compare against:
 
-## First make a segmentation function, because the output of only segmentation is also interesting: 
+## First make a segmentation function, because the output of only segmentation is also interesting:
     def segment_full(self,trainpath):
         ## Import relevant training data statistics:
         traindir = os.path.dirname(trainpath)
@@ -1922,7 +1953,7 @@ class social_dataset(object):
         ## Now apply part filters:
         print('applying spatial segmentation')
         self.filter_crosscheck_replaces_v2(partinds,vstats,mstats,thresh = [2,2])
-## 4/25/19: Try to replace all instaces of filter_full with filter_full_new! 
+## 4/25/19: Try to replace all instaces of filter_full with filter_full_new!
     def filter_full_new(self,trainpath):
 
         self.segment_full(trainpath)
@@ -1933,28 +1964,28 @@ class social_dataset(object):
         ## Now apply classification, interpolation, etc to the result:
         self.filter_classify_replaces_ps([i for i in range(5)],new_params)
         print('done.')
-        
-    def filter_full(self,vstats,mstats):
-        partinds = [i for i in range(10)]
-        ## First reset everything for consistent behavior:
-        self.reset_filters(partinds)
-        ## Now apply velocity segmentation:
-        print('applying temporal segmentation')
-        self.filter_check_replace_p(partinds,
-                                    windowlength = 45,
-                                    varthresh = 38,
-                                    skip = 1)
-        ## Now apply part filters:
-        print('applying spatial segmentation')
-        self.filter_crosscheck_replaces_v2(partinds,vstats,mstats,thresh = [2,2])
 
-        ## Use parameters found through optimization:
-        print('applying matching and interpolation')
-        new_params = np.array([np.log(50),3.09,3.09,40.9,40.9]) ## Found by nelder-mead
+   # def filter_full(self,vstats,mstats):
+   #     partinds = [i for i in range(10)]
+   #     ## First reset everything for consistent behavior:
+   #     self.reset_filters(partinds)
+   #     ## Now apply velocity segmentation:
+   #     print('applying temporal segmentation')
+   #     self.filter_check_replace_p(partinds,
+   #                                 windowlength = 45,
+   #                                 varthresh = 38,
+   #                                 skip = 1)
+   #     ## Now apply part filters:
+   #     print('applying spatial segmentation')
+   #     self.filter_crosscheck_replaces_v2(partinds,vstats,mstats,thresh = [2,2])
 
-        ## Now apply classification, interpolation, etc to the result:
-        self.filter_classify_replaces_ps([i for i in range(5)],new_params)
-        print('done.')
+   #     ## Use parameters found through optimization:
+   #     print('applying matching and interpolation')
+   #     new_params = np.array([np.log(50),3.09,3.09,40.9,40.9]) ## Found by nelder-mead
+
+   #     ## Now apply classification, interpolation, etc to the result:
+   #     self.filter_classify_replaces_ps([i for i in range(5)],new_params)
+   #     print('done.')
 ################################ Filter visualization functions:
     ## Show what the filters are working with:
     def filter_check_parttrace(self,pindex,start,end,windowlength=45,varthresh=40):
@@ -2360,4 +2391,522 @@ class social_dataset(object):
             subprocess.call(['ffmpeg', '-framerate', str(10), '-i', 'testframe%s.png', '-r', '30','Angle_simmotion_'+'.mp4'])
 #             for filename in glob.glob('testframe*.png'):
 #                 os.remove(filename)
+
+
+
+class social_dataset_online(social_dataset):
+    def newmethod():
+        print('I exist')
+
+    def set_nest(self,bounds):
+        """
+        Sets the bounds for the nest box. Uses same bounding box parametrization as the cropping.   
+
+        Inputs: 
+        bounds (dict): A dictionary giving the four coordinates defining the bounding box for the nest. The keys for this dictionary are {xn0,xn1,yn0,yn1}, with increasing indices indicating left to right, top to bottom indexing.  
+        """
+        ## Sanitize: 
+        gt_nestcoords = ["xn0","xn1","yn0","yn1"]
+        assert np.all([key in gt_nestcoords for key in bounds.keys()]), "dictionary keys must be in {}".format(str(gt_nextcoords))
+        assert np.all(gt_key in bounds.keys for gt_key in gt_nestcoords), "all keys required must be in present"
+        assert len(bounds.keys()) == 4, 'must have appropriate number of coordinates.'
+        self.bounds = bounds
+
+    def nest_ethogram(self,mouse):
+        """
+        Converts trace of a given mouse into a boolean vector giving True when the mouse is in the nest and False when elsewhere.
+        Inputs:
+        mouse (int): 0 -> virgin should be analyzed, 1 -> dam should be analyzed.
+        Outputs:
+        (array): boolean array giving the state of (mouse) as a boolean for every time point.  
+        
+
+        """
+        try:
+            nest_location = self.bounds
+            ## retrieve trajectory:
+            out = self.render_trajectories([mouse*5+3])[0]
+            in_nest = within_bb(out,nest_location) 
+        except AttributeError as error:
+            print(error)
+            print("must set nest bounds via set_nest method")
+
+        return in_nest
+
+    def adjacency_matrix_fast(self,frames,vstats,mstats,thresh = [2,7]):
+        ## Iterate through the parts of each mouse pairwise, and
+        ## fetch the appropriate matrix with distances:
+        ## First get the statistics into matrix form:
+        stats = [vstats,mstats]
+        meanmatrix = np.zeros((5,5))
+        stdmatrix = np.zeros((5,5))
+        diag = np.eye(15)
+        meanblocks = []
+        stdblocks = []
+        for s,stat in enumerate(stats):
+            meanmatrix = np.zeros((5,5))
+            stdmatrix = np.zeros((5,5))
+            for key in stat: 
+                meanmatrix[key[0]%5,key[1]%5] = stat[key][0]
+                stdmatrix[key[0]%5,key[1]%5] = stat[key][1]
+            meanblocks.append([meanmatrix]*2)
+            ## Standard deviation matrix gets multiplied by different values depending on on or off diagonal blocks
+            ## TODO: Fix the ordering of these blocks. maintain right now for comparison, but should be changed later. 
+            ## In particular, what you think of as the other standard deviation block (multiply by 7) is being applied to the self one!!
+            stdblocks.append([(stdmatrix+np.eye(5)*15*(1-si))*thresh[abs(si)] for si in abs(1-s-np.arange(2))])
+        meanfull = np.block(meanblocks)
+        stdfull = np.block(stdblocks)
+        print(np.round(stdfull,2))
+
+        matrix = np.zeros((len(frames),10,10))
+        traj = np.stack(self.render_trajectories([i for i in range(10)]),axis = 1) 
+        t0 = traj.reshape(-1,1,10,2)
+        t1 = traj.reshape(-1,10,1,2)
+        diffs = t0-t1
+        ## remove some entries for [fast?] norm
+        block = np.ones((5,5))
+        mask = np.block([[np.tril(block,-1),np.tril(block)],[np.tril(block),np.tril(block,-1)]])
+        stackmask = np.stack([mask,mask],axis = 2)[None,:,:,:]
+        matrix = np.linalg.norm(diffs*stackmask,axis = 3)
+        binary = abs(matrix-meanfull) < stdfull
+        binary_sym = block_symmetric(binary,5) 
+
+        dist = abs(matrix-meanfull)
+        print(np.round(dist,1))
+
+        ## These trajectories should be of shape 
+        return matrix,binary_sym
+
+    def adjacency_matrix_check(self,frames,vstats,mstats,thresh = [2,7]):
+        ## Iterate through the parts of each mouse pairwise, and
+        ## fetch the appropriate matrix with distances:
+        stats = [vstats,mstats]
+        matrix = np.zeros((len(frames),10,10))
+        distmatrix = np.zeros((len(frames),10,10))
+        stdmatrix = np.zeros((10,10))
+        for refmouse in range(2):
+            for j in range(5):
+                partref = refmouse*5+j
+                for targmouse in range(2):
+                    threshindex = targmouse == refmouse
+                    if threshindex == 0:
+                        idxvec = j+1
+                    else:
+                        idxvec = j
+                    for i in range(idxvec):
+                        parttarg = targmouse*5+i
+                        dist = self.part_dist(partref,parttarg)[frames]
+                        print(partref,parttarg,threshindex,"indices")
+                        ## We want to ask if this is typical for what we would expect:
+                        stats_touse = stats[refmouse]
+                        if i == j:
+                            mean,std = 0,15
+                        else:
+                            mean,std = stats_touse[(partref,refmouse*5+i)]
+                        ## Logical entries:
+                        #threshold is generally stricter for your own animal:
+                        ## Query: is the target mouse part in line with what would be expected
+                        ## given the reference mouse's skeleton? I.e. asking if a body part
+                        ## fits better with the other skeleton is comparing columns of this
+                        ## block diagonal matrix
+                        matrix[:,partref,parttarg] = abs(dist-mean)< thresh[threshindex]*std
+                        matrix[:,partref-j+i,parttarg-i+j] = matrix[:,partref,parttarg]
+                        distmatrix[:,partref,parttarg] = abs(dist-mean) 
+                        stdmatrix[partref,parttarg] = thresh[threshindex]*std
+        print(np.round(stdmatrix,2))
+
+
+        return matrix,distmatrix
+    
+    ## This thing is totally imperative! no reference to the underlying object. 
+    ## Here, the ref_pindex and the target_pindex are the same throughout processing! 
+    ## Simplify for reference and target the same. 
+    def deviance_simple(self,i,windowlength,reference):
+        """
+        Inputs: 
+        i:(int) a time index representing the left edge of the window that we are using to process data.  
+        windowlength:(int) a windowlength representing the amount of time over which to calculate votes.  
+        reference:(array) a numpy array representing the xy positions of multiple body parts with axes as [time,part/coordinate]. 
+        """
+        ## We have to define all relevant index sets first. This is actually where most of the trickiness happens. We do the
+        ## following: 1) define a starting point in the TARGET trajectory, by giving an index into the set of allowed axes.
+        # First define the relevant indices for interpolation: return the i+1th and the windowlength+i+1th index in the test set:
+        sample_start,sample_end = i+1,windowlength+i+1
+        # Get the sampled points from the trajectory. 
+        sampled_points = reference[sample_start:sample_end,:]
+
+
+        ## Now we should use indices to 1) interpolate the baseline trajectory, 2) evaluate the fit of the test to the
+        ## interpolation
+        ## Get the interpolated points from the trajectory:
+        sample_indices_rel = np.array([sample_start-1,sample_start,sample_end-1,sample_end])
+        ## First extract relevant trajectories
+        traj_ref_sample = reference[[sample_start-1,sample_start,sample_end-1,sample_end],:]
+        ## Create interpolation function around extracted trajectory:
+        f = interp1d(sample_indices_rel,traj_ref_sample,axis = 0,kind = 'cubic')
+
+        ## Define the relevant indices for comparison in the test trajectory space:
+        comp_indices_rel = np.arange(sample_start,sample_end)
+        ## Now evaluate this at the relevant points on the test function!
+        interped_points = f(comp_indices_rel)
+
+        return interped_points,sampled_points,comp_indices_rel
+
+    def deviance_final_p(self,i,windowlength,reference,ref_indices,target,target_indices):
+        """
+        Inputs: 
+        i:(int) a time index representing the left edge of the window that we are using to process data.  
+        windowlength:(int) a windowlength representing the amount of time over which to calculate votes.  
+        reference:(array) a numpy array representing the xy positions of multiple body parts with axes as [time,part/coordinate]. 
+        """
+        ## We have to define all relevant index sets first. This is actually where most of the trickiness happens. We do the
+        ## following: 1) define a starting point in the TARGET trajectory, by giving an index into the set of allowed axes.
+        # First define the relevant indices for interpolation: return the i+1th and the windowlength+i+1th index in the test set:
+        sample_indices_absolute = [i+1,windowlength+i+1]
+
+        sample_start = target_indices[sample_indices_absolute[0]]
+        sample_end = target_indices[sample_indices_absolute[-1]]
+
+        sample_indices_rel = np.array([sample_start-1,sample_start,sample_end-1,sample_end])
+
+        ## Define the relevant indices for comparison in the test trajectory space:
+        comp_indices_rel = np.arange(sample_start,sample_end)#target_indices[sample_indices_absolute[0]:sample_indices_absolute[-1]]
+
+        ## Now we should use indices to 1) interpolate the baseline trajectory, 2) evaluate the fit of the test to the
+        ## interpolation
+
+        traj_ref_sample = reference[[sample_start-1,sample_start,sample_end,sample_end+1],:]
+
+        ## Create interpolation function:
+        f = interp1d(sample_indices_rel,traj_ref_sample,axis = 0,kind = 'cubic')
+
+        ## Now evaluate this at the relevant points on the test function!
+
+        interped_points = f(comp_indices_rel)
+
+        sampled_points = target[sample_indices_absolute[0]:sample_indices_absolute[-1],:]
+        return interped_points,sampled_points,comp_indices_rel
+
+## Parallelized version of the above. Could be up to 10x faster.
+    def filter_check_p(self,pindices,windowlength,varthresh,skip):
+        print('from new')
+
+        sample_indices = lambda i: [i,i+1,windowlength+i+1,windowlength+i+2]
+        # Define the indices you want to check: acceptable indices in both the part trajectory for this animal and
+        # its reference counterpoint
+
+        all_vars = []
+        all_outs = []
+
+        target = np.concatenate(self.render_trajectories(pindices),axis = 1)
+        ## Make sure that no other processing has been done:
+        for pindex in pindices:
+            assert len(self.allowed_index_full[pindex]) == len(self.dataset.values), 'Must be done first'
+        target_indices = self.time_index
+
+        scores = np.zeros((len(target),len(pindices)))
+
+        compare_max = len(target_indices)-windowlength-1
+        for i in tqdm(range(compare_max)[::skip]):
+
+            current_vars = []
+            current_outs = []
+
+            #interped,sampled,indices = self.deviance_final_p(i,windowlength,target,target_indices,target,target_indices)
+            interped,sampled,indices = self.deviance_simple(i,windowlength,target)
+            linewise_vars = np.array([np.max(np.max(abs(interped-sampled),axis = 0)[2*column:2*(column+1)]) for column in range(len(pindices))])
+
+            ## Where do we violate that constraint?
+            ## We establish a "voting system" wherin points close to a certain point in time get to vote on if they think a point between them is valid. 
+
+            for column,linewise_var_max in enumerate(linewise_vars):
+                ## Preemptively filter to not check those areas that are already good: 
+                ## Requires further checking
+                if linewise_var_max > varthresh:
+                    ## Boolean condition to check in each coordinate (x,y) if we are violating the variance threshold. 
+                    violation_bool = np.max((abs(interped[:,2*column:2*(column+1)]-sampled[:,2*column:2*(column+1)])>varthresh),axis = 1)
+                    ## If we are violating, vote should be -1. If we are not, vote should be 1. 
+                    mis = -1*(violation_bool*2-1)
+                ## Uniformly pass
+                else:
+                    mis = np.ones(np.shape(interped)[0])
+
+                scores[i+1:i+windowlength+1,column] += mis
+        return scores
+
+    def filter_check_replace_p(self,pindices,windowlength = 45,varthresh = 40,skip = 1):
+        preouts = self.filter_check_p(pindices,windowlength,varthresh,skip)
+        for pindind,pindex in enumerate(pindices):
+            if not np.all(self.filter_check_counts[pindex] == preouts[:,pindind]):
+                self.filter_check_counts[pindex] = preouts[:,pindind]
+            outs = np.where(preouts[:,pindind]<0)[0]
+            if not len(outs):
+                pass
+            else:
+                outs = np.unique(outs)
+            okay_indices = np.array([index for index in self.allowed_index_full[pindex] if index[0] not in outs])
+            self.allowed_index_full[pindex] = self.simple_index_maker(pindex,okay_indices[:,0:1])
+
+## Toy generator of batch data. Generates data from a standard normal distribution most of the time, sometimes from a normal distribution with a different mean.
+
+class BatchGenerator(object):
+    """
+    Inputs: 
+
+    outmean: the mean of the distribution that generates outliers.  
+    rate: the rate at which we switch to the gaussian with the wrong mean. 
+    batchsize: the size of batches created by the network. 
+
+    """
+    def __init__(self,outmean,rate,batchsize):
+        ## Sanitize inputs: 
+        assert outmean.shape == (1,2)
+        assert (rate >= 0) and (rate <= 1)
+        assert type(batchsize) == int 
+
+        
+        self.outmean = outmean
+        self.rate = rate
+        self.batchsize = batchsize 
+
+    ## Get a sample from the above. 
+    def get(self):
+        # Get the mean: 
+        mean = np.random.binomial(1,self.rate,(self.batchsize,1))*self.outmean
+        ## Get the randomness:
+        noise = np.random.randn(self.batchsize,2)
+        samples = mean+noise
+        return samples
+        
+## An online implementation of the interpolation filter that looks for smoothness in time of processed inputs. 
+class InterpFilter(object):
+    def __init__(self,windowlength,varthresh,vidlen,nb_components,vstats,mstats):
+        """ 
+        Initialize components. 
+        Inputs: 
+        windowlength:(int) length of the window to consider when creating an interpolation filter. Will be expanded by 1 to accomodate the cubic filter. 
+        varthres:(float) the deviance we allow between the interpolated and real trajectories for something to be considered as a valid tracked position. 
+        vidlen:(int) the length in frames of the video we are recording from. Useful to initialize an array to hold these values. 
+        nb_components:(int) the number of parts*components per part we are tracking. 
+        vstats:(string) the path to the training dataset statistics. 
+        mstats:(string) the path to the training dataset statistics. 
+        """
+
+        self.windowlength = windowlength
+        self.varthresh = varthresh
+        ## First establish the deque in which we will collect our data  
+        self.queue = deque(maxlen = windowlength+2)
+        self.nb_components = nb_components
+        
+        ## Initialize scores (for interpolation):  
+        self.scores=np.zeros((vidlen,nb_components))
+
+        ## Initialize count (for indices):  
+        self.remove=np.zeros((vidlen,nb_components))
+
+        ## Initialize a counter: 
+        self.count = 0
+
+        ## Training path
+        #self.trainpath = trainpath
+        #self.trainingdata = training_dataset(trainpath,"")
+        #self.vstats,self.mstats = [t.stats_wholemouse([i+1 for i in range(100)],m) for m in range(2)]
+        self.vstats,self.mstats = vstats,mstats
+        self.thresh = [2,7]
+
+        stats = [self.vstats,self.mstats]
+        meanmatrix = np.zeros((5,5))
+        stdmatrix = np.zeros((5,5))
+        diag = np.eye(15)
+        meanblocks = []
+        stdblocks = []
+        for s,stat in enumerate(stats):
+            meanmatrix = np.zeros((5,5))
+            stdmatrix = np.zeros((5,5))
+            for key in stat: 
+                meanmatrix[key[0]%5,key[1]%5] = stat[key][0]
+                stdmatrix[key[0]%5,key[1]%5] = stat[key][1]
+            meanblocks.append([meanmatrix]*2)
+            ## Standard deviation matrix gets multiplied by different values depending on on or off diagonal blocks
+            ## TODO: Fix the ordering of these blocks. maintain right now for comparison, but should be changed later. 
+            ## In particular, what you think of as the other standard deviation block (multiply by 7) is being applied to the self one!!
+            stdblocks.append([(stdmatrix+np.eye(5)*15*(1-si))*self.thresh[abs(si)] for si in abs(1-s-np.arange(2))])
+        self.meanfull = np.block(meanblocks)
+        self.stdfull = np.block(stdblocks)
+
+    def deviance_online(self,sampled_full):
+        """
+        An online version of deviance_simple, in which we don't do any indexing into the trajectory and assume it is being given to us. 
+        Inputs: 
+        sampled_full: the sample of the relevant trajectory that we will be calculating interpolations of, plus points on the border.  
+        """
+        ## Remove the border points: 
+        sample_start,sample_end = 1,self.windowlength+1
+        sampled_points = sampled_full[sample_start:sample_end,:]
+        ## points to use for interpolation:  
+        sample_indices_rel = np.array([0,1,sample_end-1,sample_end])
+        ## values at those points
+        traj_ref_sample = sampled_full[[0,1,sample_end-1,sample_end],:]
+        ## Create interpolation function around extracted trajectory:
+        f = interp1d(sample_indices_rel,traj_ref_sample,axis = 0,kind = 'cubic')
+
+        ## Define the relevant indices for comparison in the test trajectory space:
+        comp_indices_rel = np.arange(sample_start,sample_end)
+        ## Now evaluate this at the relevant points on the test function!
+        interped_points = f(comp_indices_rel)
+
+        return interped_points,sampled_points,comp_indices_rel
+
+    def add(self,data):
+        ## First filter by time
+        processed_data,processed_bool = self.filter_t(data)
+        cross_data,cross_bool = self.filter_c(processed_data)
+        return cross_data 
+     
+    
+    def filter_c(self,data):
+        if data is not None:
+            all_matrices = self.adjacency_matrix_fast(data)
+            vself = all_matrices[:,:5,:5]
+            mconf = all_matrices[:,:5,5:]
+            mself = all_matrices[:,5:,5:]
+            vconf = all_matrices[:,5:,:5]
+
+            v_confidence = np.sum(vself,axis = 1)
+            v_cross = np.sum(vconf,axis = 1)
+            m_confidence = np.sum(mself,axis = 1)
+            m_cross = np.sum(mconf,axis = 1)
+
+            vconfusion = v_confidence-v_cross
+            mconfusion = m_confidence-m_cross
+
+
+
+            confusion = np.concatenate((vconfusion,mconfusion),axis = -1)
+            reject = confusion < 0
+            processed_data = np.full([self.nb_components*2,],np.nan) 
+            ## insert in correct values with reject doubled for xy components:
+            xyreject = np.repeat(reject,2)
+            processed_data[xyreject == 0] = data[xyreject == 0]
+            processed_bool = reject
+        else:
+            processed_data = None
+            processed_bool = None
+
+        return processed_data,processed_bool
+    def filter_t(self,data):
+        """
+        Add data to the queue, and process if the queue is long enough.  
+        Inputs: 
+        data:(array) the array representing the next set of xy positions to be added. 
+        Outputs:
+        
+        """
+        self.queue.append(data)
+        ## if data is long enough, calculate interpolations 
+        if len(self.queue) < self.windowlength+2:
+            processed_data = None
+            processed_bool = None
+            
+        else: 
+            ## We need a delayed count because processing is delayed by windowlength: 
+            interped,sampled,indices = self.deviance_online(np.stack(self.queue,axis = 0))
+            interpeds = interped.reshape([-1,self.nb_components,2])
+            sampleds = sampled.reshape([-1,self.nb_components,2])
+            linewise_var_max = np.max(np.max(abs(interpeds-sampleds),axis = 0),axis = 1)
+            violation_bool = np.max((abs(interpeds-sampleds)>self.varthresh),axis = 2)
+            mis = -1*(violation_bool*2-1)
+            ## Calculate the score: 
+            self.scores[self.count+1:self.count+self.windowlength+1,:] += mis
+            ## Transform the score into a rejection boolean where tallies are complete 
+            reject = self.scores[self.count,:]<0
+            self.remove[self.count,:] = reject 
+            ## Initialize processed data array
+            processed_data = np.full([self.nb_components*2,],np.nan) 
+            ## insert in correct values with reject doubled for xy components:
+            xyreject = np.repeat(reject,2)
+            ## Get out the relevant value from the top of the queue. 
+            processed_data[xyreject == 0] = self.queue[0][xyreject == 0]
+            processed_bool = reject
+            self.count+=1
+        return processed_data,processed_bool 
+
+    def adjacency_matrix_fast(self,data,thresh = [2,7]):
+        ## Iterate through the parts of each mouse pairwise, and
+        ## fetch the appropriate matrix with distances:
+        ## First get the statistics into matrix form:
+
+        #traj = np.stack(self.render_trajectories([i for i in range(10)]),axis = 1) 
+        traj = data
+
+        matrix = np.zeros((1,10,10))
+        t0 = traj.reshape(-1,1,10,2)
+        t1 = traj.reshape(-1,10,1,2)
+        diffs = t0-t1
+        ## remove some entries for [fast?] norm
+        block = np.ones((5,5))
+        mask = np.block([[np.tril(block,-1),np.tril(block)],[np.tril(block),np.tril(block,-1)]])
+        stackmask = np.stack([mask,mask],axis = 2)[None,:,:,:]
+        ## WE don't need the matrix itself, but it's an important in between step that will help us later.  
+        matrix = np.linalg.norm(diffs*stackmask,axis = 3)
+        binary = abs(matrix-self.meanfull) < self.stdfull
+        binary_sym = block_symmetric(binary,5) 
+
+        #dist = abs(matrix-self.meanfull)
+
+        ## These trajectories should be of shape 
+        return binary_sym
+
+## Helper function:
+        
+def block_symmetric(matset,b):
+    """
+    A function that will take a block matrix with lower triangular blocks and symmetrize it blockwise
+    Inputs: 
+
+    matset: A set of matrices stacked along the first dimension that we want to work with. We will assume square symmetric blocks in the second and third dimensions are what we will be transposing. 
+    b: An integer giving the block size
+    """
+    matcopy = np.copy(matset)
+    ## The majority of work here is in index manipulation. 
+    trilx,trily = np.tril_indices(b,k = -1)
+    trilxo,trilyo = trilx+b,trily+b
+    ## Stack all x and all y indices: 
+    all_trilx = np.concatenate([trilx,trilx,trilxo,trilxo])
+    all_trily = np.concatenate([trily,trilyo,trily,trilyo])
+    all_triux = np.concatenate([trily,trily,trilyo,trilyo])
+    all_triuy = np.concatenate([trilx,trilxo,trilx,trilxo])
+    ## Now just copy in in batch:
+    matcopy[(...,all_triux,all_triuy)] = matset[(...,all_trilx,all_trily)]
+    return matcopy
+
+## Helper class: 
+
+class extrapolator(object):
+    """
+    A wrapper for a collection of scipy interpolation objects. This object is used to generate approximations to the trajectory from only one side whenever the actual data is not present. 
+    
+    Inputs: 
+    nb_components:(int) The number of components that you will be analyzing. Assumed that each represents a 2d component. 
+    """
+    def __init__(self,nb_components): 
+        self.nb_components = nb_components
+        ## To contain indices: 
+        self.containers_x = [deque(maxlen = 5) for i in range(self.nb_components)] ## One deque for each component!
+        ## To contain xy positions:
+        self.containers_y = [deque(maxlen = 5) for i in range(self.nb_components)] ## One deque for each component!
+
+    def update(self,data,binary,time):
+        """
+        Inputs: 
+        data: A (nb_components*2,) dimensional vector representing the xy position of each part we wish to model. 
+        binary: A (nb_components,) dimensional vector representing whether or not this data was accepted by the corresponding filter. 
+        time: An integer, giving the count of this dataset.  
+        """
+        ## First decide what needs to be updated by looking at binary.  
+
+        ## Next update the relevant x containers with the current time, and the relevant y containers with the corresponding current data. 
+
+
+
 
