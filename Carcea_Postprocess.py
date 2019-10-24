@@ -76,10 +76,10 @@ if __name__ == "__main__":
             for m,mouse in enumerate(ind_lbs):
                 for p,pos in enumerate(pos_lbs):
                     partind = m*5+p
-                    all_dict["{}.{}.traj".format(mouse,pos)] = trajectories[partind]
-                    all_dict["{}.{}.vel".format(mouse,pos)] = velocities[partind]
-                all_dict["{}.dist".format(mouse)] = dist_traveled[m]
-                all_dict["{}.nest".format(mouse)] = nest_ethos[m]
+                    all_dict["{}_{}_traj".format(mouse,pos)] = trajectories[partind]
+                    all_dict["{}_{}_vel".format(mouse,pos)] = velocities[partind]
+                all_dict["{}_dist".format(mouse)] = dist_traveled[m]
+                all_dict["{}_nest".format(mouse)] = nest_ethos[m]
             all_dict["pursuit".format(mouse)] = pursuit_etho
 
             savemat(os.path.join(savedirectory,name+'processed.mat'),all_dict)
