@@ -14,3 +14,19 @@ coordinates:
       x1: 960 
       y0: 100 
       y1: 400 
+nests:
+    box0:
+      xn0: 222 
+      xn1: 292 
+      yn0: 305 
+      yn1: 367 
+    box1:
+      xn0: 488 
+      xn1: 547 
+      yn0: 309 
+      yn1: 364 
+    box2:
+      xn0: 880 
+      xn1: 942 
+      yn0: 266 
+      yn1: 362 
