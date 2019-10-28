@@ -339,7 +339,7 @@ def crop_videos_v2(cwd = None):
 def write_cropped_video(cwd,video,interval,length,end): 
     clip = VideoFileClip(cwd+'/'+video)
     try:
-        with open(cwd+'/'+video.split('.')[0]+'config.py','r+') as f:
+        with open(cwd+'/'+'config.py','r+') as f:
             coords = ['x0 = \n','y0 = \n','x1 = \n','y1 = \n']
             intcoords = []
             for coord in range(len(coords)):

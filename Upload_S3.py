@@ -11,16 +11,22 @@ from Interface_S3 import upload
 
 if __name__ == "__main__":
     foldername = sys.argv[1]
-    keypath = sys.argv[2]
-    bucket_name = 'froemkelab.videodata'
+    bucket_name = sys.argv[2] 
+    keypath = sys.argv[3]
+    resultpath = sys.argv[4]
+    exclude = sys.argv[5]
     
-    print(foldername,keypath)
+    ## We must do some additional processing for the keypath to handle folder uploads .
+    ##TODO: Reconfigure lambda inputs to handle this instead. 
+    if keypath.split("/")[-1] is "inputs": 
+        keypath = os.path.dirname(keypath)
+
     ## Only reupload analysis results:
     analysis_results = os.listdir(foldername)    
     for filename in analysis_results:
-        if filename.split('.')[-1] != 'mp4':
+        if filename.split('.')[-1] != exclude:
             ## give the file the right key prefix: 
-            key = keypath+'/'+filename 
+            key = keypath+'/'+resultpath+'/'+filename 
             print(key,foldername+filename)
             upload(bucket_name,filename,foldername,key)
 

@@ -11,8 +11,8 @@ from Interface_S3 import download
 
 if __name__ == "__main__":
     key = sys.argv[1]
-    targetdir = sys.argv[2]
-    bucket_name = 'froemkelab.videodata'
+    bucket_name = sys.argv[2]
+    targetdir = sys.argv[3]
     s3 = boto3.resource('s3')
     my_bucket = s3.Bucket(bucket_name)
     for object in my_bucket.objects.filter(Prefix = key):
