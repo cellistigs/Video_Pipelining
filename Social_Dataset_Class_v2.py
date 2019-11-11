@@ -1234,6 +1234,10 @@ class social_dataset(object):
 
         ## Keep track of last entry for both animals:
         lastentries_hist = [[],[]]
+        ## Initialize:
+        for i in range(2):
+            lastentries_hist[i] = trajectories[i][0,:] 
+
         for time in tqdm(range(length)):
 
             ## until we exit the current interval, we track the start and end of the current interval:
@@ -1408,10 +1412,15 @@ class social_dataset(object):
         self.reset_filters(partinds)
         ## Now apply velocity segmentation:
         print('applying temporal segmentation')
-        self.filter_check_replace_p(partinds,
+        ## Replace just the time component due to bugs
+        self.filter_time_replace(partinds,
                                     windowlength = 45,
                                     varthresh = 38,
                                     skip = 1)
+        #self.filter_check_replace_p(partinds,
+        #                            windowlength = 45,
+        #                            varthresh = 38,
+        #                            skip = 1)
         ## Now apply part filters:
         print('applying spatial segmentation')
         self.filter_crosscheck_replaces_v2(partinds,vstats,mstats,thresh = [2,2])
