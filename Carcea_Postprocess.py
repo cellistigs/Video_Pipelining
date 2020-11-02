@@ -114,8 +114,8 @@ if __name__ == "__main__":
             ##joblib.dump(trajectories,os.path.join(savedirectory,name+'filt'))
             ##social_obj.full_ethogram(save = True,show = False,savepath = name+'/')
         except Exception as e: 
-            print('Encountered exception '+str(e) +' while processing file '+str(tracefile))
-            raise NotImplementedError("Debugging")
+            print('Encountered exception '+str(e) +' while processing file '+str(tracefile)+". Moving on to next file.")
+            continue
       
         
     
