@@ -224,6 +224,18 @@ class social_dataset(object):
         filtered_x,filtered_y = np.interp(self.time_index,part_okindex[:,0],out[:,0]),np.interp(self.time_index,part_okindex[:,0],out[:,1])
         filtered_part = np.concatenate((filtered_x[:,np.newaxis],filtered_y[:,np.newaxis]),axis = 1)
         return filtered_part
+    # render the trajectory with nans:  
+    def render_trajectory_full(self,pindex):
+        rawtrajectories = self.dataset[self.scorer].values
+        part_okindex = self.allowed_index_full[pindex]
+        time = part_okindex[:,0:1]
+        x = part_okindex[:,1:2]*3
+        y = part_okindex[:,1:2]*3+1
+        coords = np.concatenate((x,y),axis = 1)
+        out = rawtrajectories[time,coords]
+        filtered_x,filtered_y = np.interp(self.time_index,part_okindex[:,0],out[:,0]),np.interp(self.time_index,part_okindex[:,0],out[:,1])
+        filtered_part = np.concatenate((filtered_x[:,np.newaxis],filtered_y[:,np.newaxis]),axis = 1)
+        return filtered_part
 
     def render_trajectory_valid(self,pindex):
         rawtrajectories = self.dataset[self.scorer].values
