@@ -1,4 +1,5 @@
 import moviepy
+import logging
 from tqdm import tqdm
 from moviepy.editor import VideoFileClip
 import matplotlib.pyplot as plt
@@ -15,12 +16,28 @@ import yaml
 ## Code revised on 9/9
 ## Write a function object to be a single worker to which you can farm out jobs intelligently. An unfortunate consequence of moviepy processing is that VideoFileClips cannot be passed to child processes via multiprocessing, so we must pass references and load the video in each thread. If possible we should extract full clips and then throw away all full clips in each thread. 
 def distribute_render(configpath,dirpath,length = 2400,threads = 4,ending= 'mpg'): 
+    """
+    Top-level function to distribute rendering of cropped videos across multiple threads.  
+    Inputs:
+    configpath (str): the path to the config file we will use to process data. 
+    
+    """
     # First get all videos:
     files = os.listdir(dirpath)
     videos = [video for video in files if video.split('.')[-1] == ending]
     #Get configuration file for space:
     y = yaml.load(open(configpath))
-    boxcoords = [y['coordinates']['box{}'.format(i)] for i in range(len(y['coordinates']))]
+    ## Get the populated indices: 
+    keygen = y["coordinates"].keys() 
+    inddict = {}
+    for k in keygen:
+        boxints = re.findall(r'\d+',k) 
+        assert len(boxints) == 1, "must be only one integer indicating the box number."
+        boxint = int(boxints[0])
+        inddict[k] = boxint
+
+    # boxcoords = [y['coordinates']['box{}'.format(i)] for i in range(len(y['coordinates']))]
+    boxcoords = [bc for bc in y['coordinates'].values()]
     
     ## Iterate through videos and collect necessary info: 
     for videopath in videos:
@@ -31,7 +48,8 @@ def distribute_render(configpath,dirpath,length = 2400,threads = 4,ending= 'mpg'
         # If analysis has been found:
         all_dicts = []
         ident_base = videopath.split('.'+ending)[0]
-        for ci in range(len(y['coordinates'])):
+        for boxid in y['coordinates'].keys():
+            ci = inddict[boxid]
             ident =  ident_base+'roi_'+str(ci)+'cropped_'+'part'
             done = [int(re.findall('\d+',part.split('.')[0])[-1]) for part in files if ident in part.split('.')[0]]
             presegs = range(np.ceil(seconds/length).astype(int))
@@ -49,7 +67,8 @@ def distribute_render(configpath,dirpath,length = 2400,threads = 4,ending= 'mpg'
                 else:
                     endind = length*(segment+1)
                 tempdicts.append({'key':segment,'value':[segment*length,endind]})
-            spatdict = {'key':ci,'value':[boxcoords[ci][ind] for ind in ['x0','x1','y0','y1']]}
+            #spatdict = {'key':ci,'value':[boxcoords[ci][ind] for ind in ['x0','x1','y0','y1']]}
+            spatdict = {'key':ci,'value':y["coordinates"][boxid]}
             roi_dicts = [{'spatial':spatdict,'temporal':tempdict} for tempdict in tempdicts]
             all_dicts = all_dicts+ roi_dicts
 
@@ -68,7 +87,11 @@ class RenderWorker(object):
         self.namebase = namebase
 
     def __call__(self,queue):
-        render_queue(queue,self.videopath,self.namebase)
+        try:
+            render_queue(queue,self.videopath,self.namebase)
+        except:
+            logging.exception("f(%r) failed" % ("map"))
+            raise
 
 def render_queue(queue,videopath,namebase):
     ## This function loads the video into memory, clips out relevant chunks, and then renders each.  
@@ -86,7 +109,9 @@ def render_queue(queue,videopath,namebase):
         tempkey = tempfield['key']
         tempval = tempfield['value']
         print(tempval,spatval,'spatial and temporal boundaries')
-        cropped = clip.crop(x1 = spatval[0],y1 = spatval[2],x2 = spatval[1], y2 = spatval[3])
+        args = {"x1":spatval["x0"],"y1":spatval["y0"],"x2":spatval["x1"],"y2":spatval["y1"]}
+        #cropped = clip.crop(x1 = spatval["x0"],y1 = spatval["x2"],x2 = spatval["x1"], y2 = spatval["x3"])
+        cropped = clip.crop(**args)
         cropped_cutout = cropped.subclip(t_start = tempval[0],t_end = tempval[1])
         print(cropped_cutout.size,cropped_cutout.duration)
         #ident =  videoname.split('.'+ending)[0]+'roi_'+str(ci)+'cropped_'+'part'
