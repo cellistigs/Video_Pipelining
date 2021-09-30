@@ -15,12 +15,13 @@ import yaml
 ## Code written on 8/30. 
 ## Code revised on 9/9
 ## Write a function object to be a single worker to which you can farm out jobs intelligently. An unfortunate consequence of moviepy processing is that VideoFileClips cannot be passed to child processes via multiprocessing, so we must pass references and load the video in each thread. If possible we should extract full clips and then throw away all full clips in each thread. 
-def distribute_render(configpath,dirpath,length = 2400,threads = 4,ending= 'mpg'): 
+def distribute_render(configpath,dirpath,outpath=None,length = 2400,threads = 4,ending= 'mpg'): 
     """
     Top-level function to distribute rendering of cropped videos across multiple threads.  
     Inputs:
     :param configpath: (str) the path to the config file we will use to process data. This config file should contain a dictionary of coordinates, with each indicating the corners of a region of interest in the video. 
-    :param dirpath: (str) path where we will write out videos. 
+    :param dirpath: (str) path containing videos to analyze. 
+    :param outpath: (str) directory where we should write out videos. If not given defaults to dirpath. 
     :param length: make subclips of `length` frames.  
     :param threads: number of parallel workers to use.
     :param ending: only process videos with the given ending. 
@@ -51,7 +52,13 @@ def distribute_render(configpath,dirpath,length = 2400,threads = 4,ending= 'mpg'
         seconds = clip.duration
         # If analysis has been found:
         all_dicts = []
-        ident_base = videopath.split('.'+ending)[0]
+
+        if outpath is None: ## if outpath is not given, just write back to the same directory. 
+            ident_base = videopath.split('.'+ending)[0]
+        else: ## else, write out to a different subdirectory.    
+            ident_name = os.path.basename(videopath).split("."+ending)[0]
+            ident_base = os.path.join(outpath,ident_name)
+
         for boxid in y['coordinates'].keys():
             ci = inddict[boxid]
             ident =  ident_base+'roi_'+str(ci)+'cropped_'+'part'
