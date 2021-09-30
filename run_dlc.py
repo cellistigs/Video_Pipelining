@@ -14,7 +14,7 @@ import deeplabcut
 @click.option("--dlcconfig","-d",help = "full string path to dlc config file for the model you want to use.")
 @click.option("--videodir","-v",help = "full string path to videos you want to analyze with this model. ")
 def main(dlcconfig,videodir):
-    videos = [os.path.join(videodir,vi) for vi in os.listdir(videodir)]
+    videos = [os.path.join(videodir,vi) for vi in os.listdir(videodir) if vi.endswith("mp4")]
     deeplabcut.analyze_videos(dlcconfig,videos)
 
 if __name__ == "__main__":
