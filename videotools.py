@@ -19,7 +19,11 @@ def distribute_render(configpath,dirpath,length = 2400,threads = 4,ending= 'mpg'
     """
     Top-level function to distribute rendering of cropped videos across multiple threads.  
     Inputs:
-    configpath (str): the path to the config file we will use to process data. 
+    :param configpath: (str) the path to the config file we will use to process data. This config file should contain a dictionary of coordinates, with each indicating the corners of a region of interest in the video. 
+    :param dirpath: (str) path where we will write out videos. 
+    :param length: make subclips of `length` frames.  
+    :param threads: number of parallel workers to use.
+    :param ending: only process videos with the given ending. 
     
     """
     # First get all videos:
@@ -82,6 +86,13 @@ def distribute_render(configpath,dirpath,length = 2400,threads = 4,ending= 'mpg'
         p.join()
 
 class RenderWorker(object):
+    """We cannot use lambda functions inside multiprocessing pools but we can make function objects instead. The RenderWorker object stores as attributes the original video location, as well as the path to the video that it will write, stripped of specifics and a videopath extension. It can then be called in p.map with a dictionary of video segments we would like it to write.  
+    :param videopath: path to video.  
+    :param namebase: path to hypothetical output video, minus specifics of crop and segmentation. 
+    :ivar videopath: initial value: videopath
+    :ivar namebase: initial value: namebase
+
+    """
     def __init__(self,videopath,namebase):
         self.videopath = videopath
         self.namebase = namebase
@@ -94,6 +105,13 @@ class RenderWorker(object):
             raise
 
 def render_queue(queue,videopath,namebase):
+    """ Internal function called by RenderWorker. Takes in a queue of subclip specifications, as well as the path to the original video and the base of the name for hypothetical additiona videos that we should write. 
+
+    :param queue: a list of dictionaries. Each dictionary specifies parameters for how to crop a video in space and time. 
+    :param videopath: path to video.  
+    :param namebase: path to hypothetical output video, minus specifics of crop and segmentation. 
+
+    """
     ## This function loads the video into memory, clips out relevant chunks, and then renders each.  
     clipqueue = []
     clip = VideoFileClip(videopath)
@@ -118,9 +136,6 @@ def render_queue(queue,videopath,namebase):
         name = namebase+'roi_'+str(spatkey)+'cropped_part'+str(tempkey)+'.mp4'
         cropped_cutout.write_videofile(name,codec = 'mpeg4',bitrate = "1500k",threads = 2,progress_bar = True)
 
-        
-
-        
 
         ## queue is a set of processing chunks that the video is responsible for. It is organized as a set of tuples indicating the spatial and temporal cropping that should be handled as individual units by each thread. 
 
